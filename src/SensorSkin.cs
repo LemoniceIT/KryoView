@@ -7,8 +7,8 @@ internal static class SensorSkin
 {
     private static readonly string[] Labels =
     {
-        "CPU", "GPU", "RAM", "THREAD CPU", "RAM USATA", "RAM DISPONIBILE",
-        "DISCO SISTEMA LIBERO", "RETE ↓", "RETE ↑", "UPTIME", "ALIMENTAZIONE"
+        "CPU", "GPU", "RAM", "CPU THREADS", "RAM USED", "RAM AVAILABLE",
+        "SYSTEM DRIVE FREE", "NETWORK ↓", "NETWORK ↑", "UPTIME", "POWER"
     };
     private static readonly Color[] Accents =
     {

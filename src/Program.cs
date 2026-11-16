@@ -14,7 +14,7 @@ internal sealed class Program : Form
     private static readonly Color Background = Color.FromArgb(24, 26, 34);
     private static readonly Color Accent = Color.FromArgb(164, 192, 132);
     private static readonly string[] Orientations =
-        { "Orizzontale", "Verticale", "Orizzontale capovolto", "Verticale capovolto" };
+        { "Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)" };
     private readonly NotifyIcon tray;
     private readonly ComboBox orientation = new ComboBox();
     private readonly Button sensors;
@@ -47,7 +47,7 @@ internal sealed class Program : Form
                 using (Bitmap frame = SensorSkin.Draw(new[]
                 {
                     "42%", "31%", "65%", "16", "10.4 GiB", "5.6 GiB", "402.1 GiB",
-                    "124 KiB/s", "20 KiB/s", "01h 23m", "Rete elettrica"
+                    "124 KiB/s", "20 KiB/s", "01h 23m", "AC power"
                 }, angle))
                 {
                     bool horizontal = angle % 2 == 0;
@@ -95,11 +95,11 @@ internal sealed class Program : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { Text = "> KryoView", ForeColor = Accent, Font = new Font("Consolas", 20, FontStyle.Bold), AutoSize = true });
         status.Dock = DockStyle.Fill;
-        status.Text = "Ricerca del pannello…";
+        status.Text = "Looking for the panel…";
         layout.Controls.Add(status);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        sensors = AddButton(actions, "Sensori", async delegate
+        sensors = AddButton(actions, "Sensors", async delegate
         {
             if (busy) return;
             if (desktopConnected && panelId == null)
@@ -108,13 +108,13 @@ internal sealed class Program : Form
                 return;
             }
             enabled = !enabled;
-            sensors.Text = enabled ? "Ferma sensori" : "Sensori";
+            sensors.Text = enabled ? "Stop sensors" : "Sensors";
             nextProbe = DateTime.MinValue;
             nextTransfer = DateTime.MinValue;
             await UpdatePanel();
         });
-        desktop = AddButton(actions, "Monitor USB", EnableDesktop);
-        AddButton(actions, "Schermo Windows", delegate { Process.Start("ms-settings:display"); });
+        desktop = AddButton(actions, "USB monitor", EnableDesktop);
+        AddButton(actions, "Display settings", delegate { Process.Start("ms-settings:display"); });
         orientation.DropDownStyle = ComboBoxStyle.DropDownList;
         orientation.Width = 190;
         orientation.BackColor = Color.FromArgb(47, 50, 63);
@@ -134,12 +134,12 @@ internal sealed class Program : Form
         };
         actions.Controls.Add(orientation);
         layout.Controls.Add(actions);
-        layout.Controls.Add(new Label { Text = "Chiudi la finestra per lasciare KryoView in background", ForeColor = Accent, AutoSize = true });
+        layout.Controls.Add(new Label { Text = "Close the window to keep KryoView running in the background.", ForeColor = Accent, AutoSize = true });
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Apri KryoView", null, delegate { Reopen(); });
-        menu.Items.Add("Installa driver monitor TURZX…", null, InstallDesktopDriver);
-        menu.Items.Add("Esci", null, delegate { exiting = true; Close(); });
+        menu.Items.Add("Open KryoView", null, delegate { Reopen(); });
+        menu.Items.Add("Install TURZX display driver…", null, InstallDesktopDriver);
+        menu.Items.Add("Exit", null, delegate { exiting = true; Close(); });
         tray = new NotifyIcon { Text = "KryoView", Icon = Icon, ContextMenuStrip = menu, Visible = true };
         tray.DoubleClick += delegate { Reopen(); };
         timer.Tick += async delegate { await UpdatePanel(); };
@@ -197,11 +197,11 @@ internal sealed class Program : Form
                     nextTransfer = DateTime.MinValue;
                 }
                 desktop.Enabled = panelId != null;
-                status.Text = candidates.Length > 1 ? "Più pannelli V1.x rilevati. Collegane uno per questo collaudo." :
-                    panelId != null ? (panel == null ? "TURZX 8,8″ V1.x · USB" : "TURZX 8,8″ V1.x · Dashboard attiva") :
+                status.Text = candidates.Length > 1 ? "Multiple V1.x panels detected. Connect one panel to continue." :
+                    panelId != null ? (panel == null ? "TURZX 8.8″ V1.x · USB" : "TURZX 8.8″ V1.x · Dashboard active") :
                     ids.Any(id => id.IndexOf("PID_AD", StringComparison.OrdinalIgnoreCase) >= 0)
-                        ? "Display USB in possibile modalità monitor. Verifica in Impostazioni schermo." :
-                    ids.Length > 0 ? "Possibile Rev C rilevata. Trasporto USB in sviluppo." : "Nessun TURZX 8,8″ rilevato.";
+                        ? "USB display detected. Check Windows Display settings." :
+                    ids.Length > 0 ? "Possible Rev C panel detected. USB support is in development." : "No TURZX 8.8″ panel detected.";
             }
             if (!enabled) ClosePanel();
             if (enabled && panelId != null && DateTime.UtcNow >= nextTransfer)
@@ -224,7 +224,7 @@ internal sealed class Program : Form
                     lastReadings = readings;
                     lastAngle = angle;
                 });
-                status.Text = "TURZX 8,8″ V1.x · Dashboard attiva";
+                status.Text = "TURZX 8.8″ V1.x · Dashboard active";
             }
         }
         catch (Exception error)
@@ -259,12 +259,12 @@ internal sealed class Program : Form
             return;
         }
         if (MessageBox.Show(this,
-            "Il pannello si riavvierà in modalità monitor. Per tornare indietro premi Sensori in KryoView.",
-            "Modalità monitor USB sperimentale", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
+            "The panel will restart in monitor mode. Select Sensors in KryoView to switch back.",
+            "Experimental USB monitor mode", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
         if (busy || panelId == null) return;
         busy = true;
         enabled = false;
-        sensors.Text = "Sensori";
+        sensors.Text = "Sensors";
         try
         {
             await Task.Run(delegate
@@ -272,7 +272,7 @@ internal sealed class Program : Form
                 if (panel == null) panel = new Panel(panelId);
                 panel.EnterDesktop();
             });
-            status.Text = "Pannello in riavvio. Apri Schermo Windows e prova Estendi.";
+            status.Text = "The panel is restarting. Open Display settings and select Extend.";
             nextProbe = DateTime.UtcNow.AddSeconds(4);
         }
         catch (Exception error) { MessageStatus(error.Message); }
@@ -286,11 +286,11 @@ internal sealed class Program : Form
         {
             await Task.Run(() => Panel.ExitDesktop());
             enabled = true;
-            sensors.Text = "Ferma sensori";
+            sensors.Text = "Stop sensors";
             desktopConnected = false;
             nextTransfer = DateTime.MinValue;
             nextProbe = DateTime.MinValue;
-            status.Text = "Attendo il pannello in modalità sensori…";
+            status.Text = "Waiting for the panel to return to sensor mode…";
         }
         catch (Exception error) { MessageStatus(error.Message); }
         finally { busy = false; }
@@ -304,8 +304,8 @@ internal sealed class Program : Form
         {
             using (var dialog = new OpenFileDialog
             {
-                Title = "Seleziona l’INF dal pacchetto originale del driver monitor TURZX",
-                Filter = "Pacchetto driver Windows (*.inf)|*.inf",
+                Title = "Select the INF from the original TURZX display driver package",
+                Filter = "Windows driver package (*.inf)|*.inf",
                 CheckFileExists = true,
                 RestoreDirectory = true
             })
@@ -314,14 +314,14 @@ internal sealed class Program : Form
                 string inf = dialog.FileName;
                 int result = await Task.Run(() => DesktopDriver.Install(inf));
                 if (result != 0 && result != 3010)
-                    throw new IOException("Windows ha restituito il codice " + result + " durante l’installazione del driver.");
-                string message = result == 3010 ? "Riavvia Windows per completare l’installazione." :
-                    "Pacchetto acquisito da Windows. Ora puoi provare Monitor USB.";
-                MessageBox.Show(this, message, "Driver monitor TURZX");
+                    throw new IOException("Windows returned code " + result + " while installing the driver.");
+                string message = result == 3010 ? "Restart Windows to finish installing the driver." :
+                    "Windows added the driver package. You can now try USB monitor mode.";
+                MessageBox.Show(this, message, "TURZX display driver");
                 nextProbe = DateTime.MinValue;
             }
         }
-        catch (Exception error) { MessageBox.Show(this, error.Message, "Driver monitor TURZX"); }
+        catch (Exception error) { MessageBox.Show(this, error.Message, "TURZX display driver"); }
         finally { busy = false; }
     }
 

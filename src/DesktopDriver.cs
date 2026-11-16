@@ -29,7 +29,7 @@ internal static class DesktopDriver
     internal static int Install(string inf)
     {
         if (!Matches(inf))
-            throw new InvalidDataException("Seleziona il file INF originale del driver desktop TURZX (1A86:AD11).");
+            throw new InvalidDataException("Select the original TURZX desktop driver INF (1A86:AD11).");
 
         // Windows validates the signed package and performs device matching.
         using (var process = Process.Start(new ProcessStartInfo

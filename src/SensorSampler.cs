@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
@@ -31,7 +32,7 @@ internal sealed class SensorSampler : IDisposable
         ReadNetwork(out download, out upload);
         var power = SystemInformation.PowerStatus;
         BatteryChargeStatus battery = power.BatteryChargeStatus;
-        string powerText = power.PowerLineStatus == PowerLineStatus.Online ? "Rete elettrica" : Unavailable;
+        string powerText = power.PowerLineStatus == PowerLineStatus.Online ? "AC power" : Unavailable;
         if (battery != BatteryChargeStatus.Unknown && (battery & BatteryChargeStatus.NoSystemBattery) == 0)
             powerText = Percent(power.BatteryLifePercent * 100);
         TimeSpan uptime = TimeSpan.FromMilliseconds(GetTickCount64());
@@ -40,11 +41,11 @@ internal sealed class SensorSampler : IDisposable
         {
             ReadCpu(), gpu.Read(),
             hasMemory ? Percent(memory.Load) : Unavailable,
-            Environment.ProcessorCount.ToString(),
+            Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture),
             hasMemory ? Size(memory.TotalPhys - (double)memory.AvailPhys) : Unavailable,
             hasMemory ? Size(memory.AvailPhys) : Unavailable,
             disk, download, upload,
-            uptime.Days > 0 ? uptime.ToString(@"d'd 'hh'h'") : uptime.ToString(@"hh'h 'mm'm'"),
+            uptime.ToString(uptime.Days > 0 ? @"d'd 'hh'h'" : @"hh'h 'mm'm'", CultureInfo.InvariantCulture),
             powerText
         };
     }
@@ -108,12 +109,12 @@ internal sealed class SensorSampler : IDisposable
             bytes /= 1024;
             unit++;
         }
-        return bytes.ToString(unit == 0 ? "0" : "0.0") + " " + units[unit];
+        return bytes.ToString(unit == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[unit];
     }
 
     private static string Percent(double value)
     {
-        return Math.Max(0, Math.Min(100, value)).ToString("0") + "%";
+        return Math.Max(0, Math.Min(100, value)).ToString("0", CultureInfo.InvariantCulture) + "%";
     }
 
     public void Dispose() { gpu.Dispose(); }

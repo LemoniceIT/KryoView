@@ -21,10 +21,10 @@ internal sealed class Panel : IDisposable
     {
         uint size;
         if (CM_Get_Device_ID_List_SizeW(out size, "USB", 0x101) != 0)
-            throw new IOException("Impossibile enumerare i dispositivi USB.");
+            throw new IOException("Could not enumerate USB devices.");
         var list = new char[size];
         if (CM_Get_Device_ID_ListW("USB", list, size, 0x101) != 0)
-            throw new IOException("Elenco USB cambiato. Riprova.");
+            throw new IOException("The USB device list changed. Try again.");
         return new string(list).Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries)
             .Where(id => IsModel(id, UsbModel) ||
                          IsModel(id, @"USB\VID_0525&PID_A4A7") ||
@@ -81,7 +81,7 @@ internal sealed class Panel : IDisposable
                             !WinUsb_SetPipePolicy(usb, 0x01, 3, 4, ref timeout))
                             throw new Win32Exception();
                         if (Exchange(10, null)[0] != 10)
-                            throw new IOException("Risposta inattesa dal pannello.");
+                            throw new IOException("Unexpected response from the panel.");
                         return;
                     }
                     catch
@@ -93,18 +93,18 @@ internal sealed class Panel : IDisposable
                 candidate.Dispose();
             }
         }
-        throw new IOException("Interfaccia WinUSB non accessibile. Chiudi TURZX e controlla il driver USB.");
+        throw new IOException("Cannot access the WinUSB interface. Close the TURZX app and check the USB driver.");
     }
 
     internal void ShowFrame(byte[] png)
     {
-        if (png.Length > 1048576) throw new IOException("Immagine troppo grande per il pannello.");
-        if (Exchange(102, png)[0] != 102) throw new IOException("Il pannello non ha confermato il fotogramma.");
+        if (png.Length > 1048576) throw new IOException("The image is too large for the panel.");
+        if (Exchange(102, png)[0] != 102) throw new IOException("The panel did not acknowledge the frame.");
     }
 
     internal void EnterDesktop()
     {
-        if (Exchange(150, null)[0] != 150) throw new IOException("Il pannello non ha confermato il cambio modalità.");
+        if (Exchange(150, null)[0] != 150) throw new IOException("The panel did not acknowledge the mode change.");
         Write(Packet(11, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
     }
 
@@ -113,15 +113,15 @@ internal sealed class Panel : IDisposable
         var hid = new Guid("4d1e55b2-f16f-11cf-88cb-001111000030");
         uint size;
         if (CM_Get_Device_Interface_List_SizeW(out size, ref hid, null, 0) != 0)
-            throw new IOException("Impossibile enumerare le interfacce HID.");
+            throw new IOException("Could not enumerate HID interfaces.");
         var interfaces = new char[size];
         if (CM_Get_Device_Interface_ListW(ref hid, null, interfaces, size, 0) != 0)
-            throw new IOException("Elenco HID cambiato. Riprova.");
+            throw new IOException("The HID interface list changed. Try again.");
         string[] paths = new string(interfaces).Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries)
             .Where(path => path.StartsWith(@"\\?\hid#vid_1a86&pid_ad11&", StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (paths.Length != 1)
-            throw new IOException("Per passare a Sensori deve essere disponibile una sola interfaccia HID desktop TURZX.");
+            throw new IOException("Switching to Sensors requires exactly one TURZX desktop HID interface.");
 
         using (var handle = CreateFileW(paths[0], 0xc0000000, 3, IntPtr.Zero, 3, 0x40000000, IntPtr.Zero))
         {
@@ -131,7 +131,7 @@ internal sealed class Panel : IDisposable
                 SendReport(stream, 1, new byte[] { 0xaa, 0x55, 0x33 });
                 var response = new byte[65];
                 if (CompleteReport(stream.ReadAsync(response, 0, response.Length)) < 4 || response[3] != 0x88)
-                    throw new IOException("Il pannello HID non ha confermato il modello da 8,8″.");
+                    throw new IOException("The HID device did not confirm it is an 8.8-inch panel.");
                 byte[] command = Encoding.ASCII.GetBytes("5f3759df");
                 SendReport(stream, 1, command);
                 SendReport(stream, 2, command);
@@ -150,7 +150,7 @@ internal sealed class Panel : IDisposable
     private static int CompleteReport(Task operation)
     {
         if (Task.WhenAny(operation, Task.Delay(1250)).GetAwaiter().GetResult() != operation)
-            throw new IOException("Il pannello HID non risponde.");
+            throw new IOException("The HID device is not responding.");
         operation.GetAwaiter().GetResult();
         var read = operation as Task<int>;
         return read == null ? 0 : read.Result;
@@ -163,7 +163,7 @@ internal sealed class Panel : IDisposable
         uint received;
         if (!WinUsb_ReadPipe(usb, 0x81, response, (uint)response.Length, out received, IntPtr.Zero))
             throw new Win32Exception();
-        if (received == 0) throw new IOException("Risposta USB vuota.");
+        if (received == 0) throw new IOException("Empty USB response.");
         return response;
     }
 
@@ -196,7 +196,7 @@ internal sealed class Panel : IDisposable
         uint written;
         if (!WinUsb_WritePipe(usb, 0x01, packet, (uint)packet.Length, out written, IntPtr.Zero))
             throw new Win32Exception();
-        if (written != packet.Length) throw new IOException("Trasferimento USB incompleto.");
+        if (written != packet.Length) throw new IOException("Incomplete USB transfer.");
     }
 
     public void Dispose()

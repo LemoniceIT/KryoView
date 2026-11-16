@@ -1,18 +1,18 @@
 # KryoView
 
-Prototipo Windows 11 x64 per pannelli TURZX/Turing da 8,8″. La finestra si chiude nell’area di notifica, dove **Esci** arresta l’app.
+KryoView is an independent Windows 11 x64 project for TURZX/Turing 8.8-inch panels, with experimental support for the USB V1.x revision. Closing the window keeps KryoView in the notification area. Select **Exit** from that menu to stop it.
 
 ## Build
 
-Esegui `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1` dalla radice del progetto. Il risultato è `bin\KryoView.exe`. La build usa il compilatore di .NET Framework incluso in Windows. `KryoView.exe --self-test` verifica il pacchetto USB, l’enumerazione e la geometria dei fotogrammi.
+Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1` from the project root. The build uses the .NET Framework compiler included with Windows and creates `bin\KryoView.exe`. Run `KryoView.exe --self-test` to check the USB packet, device enumeration, and frame dimensions.
 
-## Prova sul pannello
+## Test with a panel
 
-1. Collega un TURZX 8,8″ USB V1.x e premi **Sensori**. Il menu di orientamento seleziona la skin orizzontale o verticale, anche capovolta. Il pannello mostra CPU, GPU, RAM, thread CPU, RAM usata e disponibile, spazio libero sul disco di sistema, traffico di rete in ingresso e in uscita, uptime e alimentazione. Le letture compaiono sul pannello. Il carico GPU usa il motore più impegnato tra quelli esposti dai contatori Windows. Una metrica indisponibile è indicata da un trattino.
-2. Per la modalità monitor, usa **Installa driver monitor TURZX** dal menu dell’icona nell’area di notifica e indica l’INF originale del driver desktop. Estrai insieme tutti i file del pacchetto ufficiale, compreso il catalogo firmato. Windows chiede i privilegi per installarlo con PnPUtil. Il repository contiene il codice di integrazione. Il pacchetto si ottiene dal produttore.
-3. Premi **Monitor USB**, poi **Schermo Windows** per impostare **Estendi** e l’orientamento del monitor.
-4. Premi **Sensori** per tornare alla dashboard. KryoView invia il comando HID soltanto quando il dispositivo conferma il modello da 8,8″.
+1. Connect a TURZX 8.8-inch USB V1.x panel and select **Sensors**. Choose a landscape or portrait skin from the orientation menu. Both layouts offer flipped variants. The dashboard shows CPU, GPU, RAM, CPU threads, used and available RAM, free space on the system drive, inbound and outbound network traffic, uptime, and power status. Readings appear on the panel. GPU usage reflects the busiest GPU engine exposed by Windows. A dash indicates an unavailable reading.
+2. For monitor mode, select **Install TURZX display driver** from the notification area menu and choose the INF from the official desktop driver package. Extract all files together, including the signed catalog. Windows requests administrator privileges to install the package with PnPUtil. Obtain the driver package from the manufacturer.
+3. Select **USB monitor**, then open **Display settings** to choose **Extend** and set the monitor orientation.
+4. Select **Sensors** to return to the dashboard. KryoView sends the HID command after the device confirms that it is an 8.8-inch panel.
 
-Il passaggio tra modalità e l’installazione con il pacchetto ufficiale richiedono un collaudo hardware. La Rev C può essere rilevata, mentre la dashboard e la modalità monitor sono implementate per la V1.x. La modalità monitor richiede il driver del produttore, mentre l’app TURZX può restare chiusa.
+Switching modes and installing the official package still require hardware testing. KryoView detects Rev C panels. Dashboard and monitor mode are implemented for the USB V1.x revision. Monitor mode requires the manufacturer's display driver and can run with the TURZX app closed.
 
-[Protocollo del pannello](https://github.com/jripper77/bezel-evo/blob/windows-improvements/docs/reverse-engineering/protocol-turing-usb.md#10-desktop-mode-and-the-hid-companion-1a86ad11) · [Gestione dei pacchetti con PnPUtil](https://learn.microsoft.com/windows-hardware/drivers/devtest/pnputil-command-syntax)
+[Panel protocol](https://github.com/jripper77/bezel-evo/blob/windows-improvements/docs/reverse-engineering/protocol-turing-usb.md#10-desktop-mode-and-the-hid-companion-1a86ad11) · [Managing driver packages with PnPUtil](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/pnputil-command-syntax)
