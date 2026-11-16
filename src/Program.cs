@@ -4,7 +4,6 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -21,7 +20,6 @@ internal sealed class Program : Form
     private readonly Button sensors;
     private readonly Button desktop;
     private readonly Label status = new Label();
-    private readonly PictureBox preview = new PictureBox();
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 1000 };
     private Panel panel;
     private string panelId;
@@ -29,12 +27,11 @@ internal sealed class Program : Form
     private bool enabled;
     private bool busy;
     private bool exiting;
-    private bool refresh = true;
-    private string lastMetrics;
+    private SensorSampler sampler;
+    private string[] lastReadings;
+    private int lastAngle;
     private DateTime nextProbe;
     private DateTime nextTransfer;
-    private ulong lastIdle;
-    private ulong lastTotal;
 
     [STAThread]
     private static void Main(string[] args)
@@ -47,10 +44,22 @@ internal sealed class Program : Form
                 Environment.Exit(1);
             for (int angle = 0; angle < 4; angle++)
             {
-                using (Bitmap frame = DrawFrame("42%", "65%", angle))
+                using (Bitmap frame = SensorSkin.Draw(new[]
                 {
-                    RotateFrame(frame, angle);
+                    "42%", "31%", "65%", "16", "10.4 GiB", "5.6 GiB", "402.1 GiB",
+                    "124 KiB/s", "20 KiB/s", "01h 23m", "Rete elettrica"
+                }, angle))
+                {
+                    bool horizontal = angle % 2 == 0;
+                    if (frame.Width != (horizontal ? 1920 : 480) ||
+                        frame.Height != (horizontal ? 480 : 1920)) Environment.Exit(2);
+                    SensorSkin.RotateForPanel(frame, angle);
                     if (frame.Width != 480 || frame.Height != 1920) Environment.Exit(2);
+                    using (var buffer = new MemoryStream())
+                    {
+                        frame.Save(buffer, ImageFormat.Png);
+                        if (buffer.Length == 0 || buffer.Length > 1048576) Environment.Exit(2);
+                    }
                 }
             }
             try { Panel.Detect(); }
@@ -74,17 +83,16 @@ internal sealed class Program : Form
         BackColor = Background;
         ForeColor = Color.WhiteSmoke;
         Font = new Font("Consolas", 11);
-        MinimumSize = new Size(670, 390);
-        ClientSize = new Size(720, 425);
+        MinimumSize = new Size(670, 235);
+        ClientSize = new Size(720, 205);
         StartPosition = FormStartPosition.CenterScreen;
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, RowCount = 5 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, RowCount = 4 };
         Controls.Add(layout);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
         layout.Controls.Add(new Label { Text = "> KryoView", ForeColor = Accent, Font = new Font("Consolas", 20, FontStyle.Bold), AutoSize = true });
         status.Dock = DockStyle.Fill;
         status.Text = "Ricerca del pannello…";
@@ -101,7 +109,6 @@ internal sealed class Program : Form
             }
             enabled = !enabled;
             sensors.Text = enabled ? "Ferma sensori" : "Sensori";
-            refresh = true;
             nextProbe = DateTime.MinValue;
             nextTransfer = DateTime.MinValue;
             await UpdatePanel();
@@ -123,15 +130,11 @@ internal sealed class Program : Form
         {
             using (var settings = Registry.CurrentUser.CreateSubKey(@"Software\KryoView"))
                 settings.SetValue("Orientation", orientation.SelectedIndex);
-            refresh = true;
             await UpdatePanel();
         };
         actions.Controls.Add(orientation);
         layout.Controls.Add(actions);
-        preview.Dock = DockStyle.Fill;
-        preview.SizeMode = PictureBoxSizeMode.Zoom;
-        layout.Controls.Add(preview);
-        layout.Controls.Add(new Label { Text = "Anteprima sensori · Chiudi la finestra per restare in background", ForeColor = Accent, AutoSize = true });
+        layout.Controls.Add(new Label { Text = "Chiudi la finestra per lasciare KryoView in background", ForeColor = Accent, AutoSize = true });
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Apri KryoView", null, delegate { Reopen(); });
@@ -154,7 +157,6 @@ internal sealed class Program : Form
     private void Reopen()
     {
         Show();
-        refresh = true;
         WindowState = FormWindowState.Normal;
         Activate();
     }
@@ -168,10 +170,9 @@ internal sealed class Program : Form
             return;
         }
         timer.Stop();
-        if (!busy && panel != null) panel.Dispose();
+        if (!busy) ClosePanel();
         tray.Dispose();
         timer.Dispose();
-        if (preview.Image != null) preview.Image.Dispose();
         base.OnFormClosing(e);
     }
 
@@ -181,31 +182,6 @@ internal sealed class Program : Form
         busy = true;
         try
         {
-            int angle = orientation.SelectedIndex;
-            string cpu = null;
-            string ram = null;
-            bool send = false;
-            if (Visible || (enabled && panelId != null && DateTime.UtcNow >= nextTransfer))
-            {
-                cpu = ReadCpu();
-                var memory = new MemoryStatus { Length = (uint)Marshal.SizeOf(typeof(MemoryStatus)) };
-                ram = GlobalMemoryStatusEx(ref memory) ? memory.Load + "%" : "—";
-                string metrics = cpu + "/" + ram;
-                if (refresh || metrics != lastMetrics ||
-                    (enabled && panelId != null && panel == null && DateTime.UtcNow >= nextTransfer))
-                {
-                    if (Visible)
-                    {
-                        Image previous = preview.Image;
-                        preview.Image = DrawFrame(cpu, ram, angle);
-                        if (previous != null) previous.Dispose();
-                    }
-                    send = enabled && panelId != null;
-                    lastMetrics = metrics;
-                    refresh = false;
-                }
-            }
-
             bool probe = DateTime.UtcNow >= nextProbe;
             if (probe)
             {
@@ -218,8 +194,7 @@ internal sealed class Program : Form
                 {
                     ClosePanel();
                     panelId = detected;
-                    refresh = true;
-                    send = false;
+                    nextTransfer = DateTime.MinValue;
                 }
                 desktop.Enabled = panelId != null;
                 status.Text = candidates.Length > 1 ? "Più pannelli V1.x rilevati. Collegane uno per questo collaudo." :
@@ -229,18 +204,25 @@ internal sealed class Program : Form
                     ids.Length > 0 ? "Possibile Rev C rilevata. Trasporto USB in sviluppo." : "Nessun TURZX 8,8″ rilevato.";
             }
             if (!enabled) ClosePanel();
-            if (enabled && panelId != null && send && DateTime.UtcNow >= nextTransfer)
+            if (enabled && panelId != null && DateTime.UtcNow >= nextTransfer)
             {
+                int angle = orientation.SelectedIndex;
                 await Task.Run(delegate
                 {
                     if (panel == null) panel = new Panel(panelId);
-                    using (Bitmap bitmap = DrawFrame(cpu, ram, angle))
+                    if (sampler == null) sampler = new SensorSampler();
+                    string[] readings = sampler.Sample();
+                    if (lastReadings != null && angle == lastAngle && readings.SequenceEqual(lastReadings)) return;
+
+                    using (Bitmap bitmap = SensorSkin.Draw(readings, angle))
                     using (var buffer = new MemoryStream())
                     {
-                        RotateFrame(bitmap, angle);
+                        SensorSkin.RotateForPanel(bitmap, angle);
                         bitmap.Save(buffer, ImageFormat.Png);
                         panel.ShowFrame(buffer.ToArray());
                     }
+                    lastReadings = readings;
+                    lastAngle = angle;
                 });
                 status.Text = "TURZX 8,8″ V1.x · Dashboard attiva";
             }
@@ -248,7 +230,6 @@ internal sealed class Program : Form
         catch (Exception error)
         {
             ClosePanel();
-            refresh = true;
             nextTransfer = DateTime.UtcNow.AddSeconds(10);
             MessageStatus(error.Message);
         }
@@ -307,7 +288,6 @@ internal sealed class Program : Form
             enabled = true;
             sensors.Text = "Ferma sensori";
             desktopConnected = false;
-            refresh = true;
             nextTransfer = DateTime.MinValue;
             nextProbe = DateTime.MinValue;
             status.Text = "Attendo il pannello in modalità sensori…";
@@ -347,65 +327,10 @@ internal sealed class Program : Form
 
     private void ClosePanel()
     {
-        if (panel == null) return;
-        panel.Dispose();
+        if (sampler != null) sampler.Dispose();
+        sampler = null;
+        lastReadings = null;
+        if (panel != null) panel.Dispose();
         panel = null;
     }
-
-    private string ReadCpu()
-    {
-        ulong idle, kernel, user;
-        if (!GetSystemTimes(out idle, out kernel, out user)) return "—";
-        ulong total = kernel + user;
-        string result = lastTotal == 0 || total <= lastTotal ? "—" :
-            (Math.Max(0, 1 - (double)(idle - lastIdle) / (total - lastTotal)) * 100).ToString("0") + "%";
-        lastIdle = idle;
-        lastTotal = total;
-        return result;
-    }
-
-    private static Bitmap DrawFrame(string cpu, string ram, int angle)
-    {
-        bool landscape = angle % 2 == 0;
-        var bitmap = new Bitmap(landscape ? 1920 : 480, landscape ? 480 : 1920);
-        using (Graphics graphics = Graphics.FromImage(bitmap))
-        using (var heading = new Font("Consolas", 36, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var value = new Font("Consolas", 92, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var accent = new SolidBrush(Accent))
-        using (var outline = new Pen(Color.FromArgb(79, 85, 106), 2))
-        {
-            graphics.Clear(Background);
-            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            graphics.DrawString("> KryoView", heading, accent, 40, 46);
-            int cardWidth = landscape ? 875 : 400;
-            int ramX = landscape ? 970 : 40;
-            int ramY = landscape ? 125 : 610;
-            graphics.DrawRectangle(outline, 40, 125, cardWidth, 260);
-            graphics.DrawRectangle(outline, ramX, ramY, cardWidth, 260);
-            graphics.DrawString("CPU", heading, accent, 65, 155);
-            graphics.DrawString(cpu, value, Brushes.WhiteSmoke, 62, 205);
-            graphics.DrawString("RAM", heading, accent, ramX + 25, ramY + 30);
-            graphics.DrawString(ram, value, Brushes.WhiteSmoke, ramX + 22, ramY + 80);
-        }
-        return bitmap;
-    }
-
-    private static void RotateFrame(Bitmap bitmap, int angle)
-    {
-        var rotations = new[] { RotateFlipType.Rotate90FlipNone, RotateFlipType.Rotate180FlipNone,
-            RotateFlipType.Rotate270FlipNone, RotateFlipType.RotateNoneFlipNone };
-        bitmap.RotateFlip(rotations[angle]);
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MemoryStatus
-    {
-        public uint Length, Load;
-        public ulong TotalPhys, AvailPhys, TotalPage, AvailPage, TotalVirtual, AvailVirtual, AvailExtended;
-    }
-
-    [DllImport("kernel32.dll")]
-    private static extern bool GetSystemTimes(out ulong idle, out ulong kernel, out ulong user);
-    [DllImport("kernel32.dll")]
-    private static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
 }

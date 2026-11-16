@@ -8,7 +8,7 @@ Esegui `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1` dal
 
 ## Prova sul pannello
 
-1. Collega un TURZX 8,8″ USB V1.x e premi **Sensori** per inviare la dashboard CPU/RAM. Il menu accanto ai pulsanti cambia l’orientamento della dashboard.
+1. Collega un TURZX 8,8″ USB V1.x e premi **Sensori**. Il menu di orientamento seleziona la skin orizzontale o verticale, anche capovolta. Il pannello mostra CPU, GPU, RAM, thread CPU, RAM usata e disponibile, spazio libero sul disco di sistema, traffico di rete in ingresso e in uscita, uptime e alimentazione. Le letture compaiono sul pannello. Il carico GPU usa il motore più impegnato tra quelli esposti dai contatori Windows. Una metrica indisponibile è indicata da un trattino.
 2. Per la modalità monitor, usa **Installa driver monitor TURZX** dal menu dell’icona nell’area di notifica e indica l’INF originale del driver desktop. Estrai insieme tutti i file del pacchetto ufficiale, compreso il catalogo firmato. Windows chiede i privilegi per installarlo con PnPUtil. Il repository contiene il codice di integrazione. Il pacchetto si ottiene dal produttore.
 3. Premi **Monitor USB**, poi **Schermo Windows** per impostare **Estendi** e l’orientamento del monitor.
 4. Premi **Sensori** per tornare alla dashboard. KryoView invia il comando HID soltanto quando il dispositivo conferma il modello da 8,8″.
