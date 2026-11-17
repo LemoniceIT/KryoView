@@ -245,38 +245,62 @@ internal sealed class Program : Form
     private async void EnableDesktop(object sender, EventArgs e)
     {
         if (busy || panelId == null) return;
+        busy = true;
+        desktop.Enabled = false;
+        string selectedPanel = panelId;
         try
         {
-            if (!DesktopDriver.IsStaged())
+            status.Text = "Checking for the TURZX display driver…";
+            if (!await Task.Run(() => DesktopDriver.IsStaged()))
             {
-                InstallDesktopDriver(sender, e);
+                MessageStatus("Driver missing. Select Install TURZX display driver in the notification area.");
                 return;
             }
-        }
-        catch (Exception error)
-        {
-            MessageStatus(error.Message);
-            return;
-        }
-        if (MessageBox.Show(this,
-            "The panel will restart in monitor mode. Select Sensors in KryoView to switch back.",
-            "Experimental USB monitor mode", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-        if (busy || panelId == null) return;
-        busy = true;
-        enabled = false;
-        sensors.Text = "Sensors";
-        try
-        {
-            await Task.Run(delegate
+            status.Text = "TURZX display driver found.";
+            if (MessageBox.Show(this,
+                "The panel will restart in monitor mode. Select Sensors in KryoView to switch back.",
+                "Experimental USB monitor mode", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK)
+                return;
+
+            enabled = false;
+            sensors.Text = "Sensors";
+            status.Text = "Sending the mode switch to the panel…";
+            string[] previous = await Task.Run(() => Panel.Detect());
+            Task switching = Task.Run(delegate
             {
-                if (panel == null) panel = new Panel(panelId);
-                panel.EnterDesktop();
+                try
+                {
+                    if (panel == null) panel = new Panel(selectedPanel);
+                    panel.EnterDesktop();
+                }
+                finally { ClosePanel(); }
             });
-            status.Text = "The panel is restarting. Open Display settings and select Extend.";
-            nextProbe = DateTime.UtcNow.AddSeconds(4);
+            if (await Task.WhenAny(switching, Task.Delay(5000)) != switching)
+                status.Text = "USB is taking longer than expected. If this persists, reconnect the panel.";
+            await switching;
+
+            status.Text = "Waiting for Windows to detect the panel in monitor mode…";
+            for (int attempt = 0; attempt < 12; attempt++)
+            {
+                await Task.Delay(500);
+                string[] ids = await Task.Run(() => Panel.Detect());
+                if (ids.Except(previous, StringComparer.OrdinalIgnoreCase)
+                    .Any(id => Panel.IsModel(id, Panel.DesktopModel)))
+                {
+                    desktopConnected = true;
+                    panelId = null;
+                    MessageStatus("USB monitor detected. Open Display settings and select Extend.");
+                    return;
+                }
+            }
+            MessageStatus("Windows did not detect the panel in monitor mode. Check the USB connection and display driver.");
         }
         catch (Exception error) { MessageStatus(error.Message); }
-        finally { ClosePanel(); busy = false; }
+        finally
+        {
+            desktop.Enabled = panelId != null;
+            busy = false;
+        }
     }
 
     private async Task ReturnToSensors()

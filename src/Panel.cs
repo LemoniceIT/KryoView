@@ -104,7 +104,8 @@ internal sealed class Panel : IDisposable
 
     internal void EnterDesktop()
     {
-        if (Exchange(150, null)[0] != 150) throw new IOException("The panel did not acknowledge the mode change.");
+        // The protocol does not define an acknowledgement for the mode command.
+        Write(Packet(150, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
         Write(Packet(11, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
     }
 
