@@ -96,10 +96,25 @@ internal sealed class Panel : IDisposable
         throw new IOException("Cannot access the WinUSB interface. Close the TURZX app and check the USB driver.");
     }
 
-    internal void ShowFrame(byte[] png)
+    internal void StopLocalPlayback()
     {
-        if (png.Length > 1048576) throw new IOException("The image is too large for the panel.");
-        if (Exchange(102, png)[0] != 102) throw new IOException("The panel did not acknowledge the frame.");
+        // The firmware can keep its default background running after switching modes.
+        Exchange(111, null);
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            byte[] reply = Exchange(112, null);
+            if (reply.Length < 9 || reply[0] != 112)
+                throw new IOException("Unexpected playback status from the panel.");
+            if (reply[8] == 0) return;
+            Thread.Sleep(100);
+        }
+        throw new IOException("The panel did not stop its local playback.");
+    }
+
+    internal void ShowFrame(byte[] jpeg)
+    {
+        if (jpeg.Length > 1048576) throw new IOException("The image is too large for the panel.");
+        if (Exchange(101, jpeg)[0] != 101) throw new IOException("The panel did not acknowledge the frame.");
     }
 
     internal void EnterDesktop()
@@ -248,6 +263,7 @@ internal sealed class Panel : IDisposable
         if (!WinUsb_ReadPipe(usb, 0x81, response, (uint)response.Length, out received, IntPtr.Zero))
             throw new Win32Exception();
         if (received == 0) throw new IOException("Empty USB response.");
+        if (received < response.Length) Array.Resize(ref response, (int)received);
         return response;
     }
 

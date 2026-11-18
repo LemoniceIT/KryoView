@@ -57,8 +57,12 @@ internal sealed class Program : Form
                     if (frame.Width != 480 || frame.Height != 1920) Environment.Exit(2);
                     using (var buffer = new MemoryStream())
                     {
-                        frame.Save(buffer, ImageFormat.Png);
+                        SensorSkin.SaveJpeg(frame, buffer);
                         if (buffer.Length == 0 || buffer.Length > 1048576) Environment.Exit(2);
+                        buffer.Position = 0;
+                        using (var decoded = Image.FromStream(buffer, false, true))
+                            if (decoded.RawFormat.Guid != ImageFormat.Jpeg.Guid ||
+                                decoded.Width != 480 || decoded.Height != 1920) Environment.Exit(2);
                     }
                 }
             }
@@ -210,7 +214,11 @@ internal sealed class Program : Form
                 await Task.Run(delegate
                 {
                     if (panel == null) panel = new Panel(panelId);
-                    if (sampler == null) sampler = new SensorSampler();
+                    if (sampler == null)
+                    {
+                        panel.StopLocalPlayback();
+                        sampler = new SensorSampler();
+                    }
                     string[] readings = sampler.Sample();
                     if (lastReadings != null && angle == lastAngle && readings.SequenceEqual(lastReadings)) return;
 
@@ -218,7 +226,7 @@ internal sealed class Program : Form
                     using (var buffer = new MemoryStream())
                     {
                         SensorSkin.RotateForPanel(bitmap, angle);
-                        bitmap.Save(buffer, ImageFormat.Png);
+                        SensorSkin.SaveJpeg(bitmap, buffer);
                         panel.ShowFrame(buffer.ToArray());
                     }
                     lastReadings = readings;

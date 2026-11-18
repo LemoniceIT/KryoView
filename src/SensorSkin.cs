@@ -2,6 +2,8 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.IO;
+using System.Linq;
 
 internal static class SensorSkin
 {
@@ -71,6 +73,18 @@ internal static class SensorSkin
             }
         }
         return frame;
+    }
+
+    private static readonly ImageCodecInfo JpegEncoder =
+        ImageCodecInfo.GetImageEncoders().First(codec => codec.FormatID == ImageFormat.Jpeg.Guid);
+
+    internal static void SaveJpeg(Bitmap frame, Stream output)
+    {
+        using (var options = new EncoderParameters(1))
+        {
+            options.Param[0] = new EncoderParameter(Encoder.Quality, 95L);
+            frame.Save(output, JpegEncoder, options);
+        }
     }
 
     internal static void RotateForPanel(Bitmap frame, int angle)
