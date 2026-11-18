@@ -6,7 +6,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading.Tasks;
+using System.Threading;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
@@ -126,36 +126,112 @@ internal sealed class Panel : IDisposable
 
         using (var handle = CreateFileW(paths[0], 0xc0000000, 3, IntPtr.Zero, 3, 0x40000000, IntPtr.Zero))
         {
-            if (handle.IsInvalid) throw new Win32Exception();
-            using (var stream = new FileStream(handle, FileAccess.ReadWrite, 65, true))
+            if (handle.IsInvalid) throw HidError("Could not open the TURZX HID interface", Marshal.GetLastWin32Error());
+            IntPtr data;
+            if (!HidD_GetPreparsedData(handle, out data))
+                throw HidError("Could not read the TURZX HID descriptor", Marshal.GetLastWin32Error());
+
+            HidCaps caps;
+            try
             {
-                SendReport(stream, 1, new byte[] { 0xaa, 0x55, 0x33 });
-                var response = new byte[65];
-                if (CompleteReport(stream.ReadAsync(response, 0, response.Length)) < 4 || response[3] != 0x88)
-                    throw new IOException("The HID device did not confirm it is an 8.8-inch panel.");
-                byte[] command = Encoding.ASCII.GetBytes("5f3759df");
-                SendReport(stream, 1, command);
-                SendReport(stream, 2, command);
+                int status = HidP_GetCaps(data, out caps);
+                if (status != 0x00110000)
+                    throw new IOException("Could not read TURZX HID report sizes (status 0x" + status.ToString("X8") + ").");
+            }
+            finally { HidD_FreePreparsedData(data); }
+
+            if (caps.InputLength < 4 || caps.OutputLength < 10)
+                throw new IOException("Unexpected TURZX HID report sizes (input " + caps.InputLength + ", output " + caps.OutputLength + ").");
+
+            SendReport(handle, caps.OutputLength, 1, new byte[] { 0xaa, 0x55, 0x33 }, "send the model query");
+            var response = new byte[caps.InputLength];
+            if (TransferReport(handle, response, true, "read the model reply") < 4 || response[0] != 0 || response[3] != 0x88)
+                throw new IOException("The HID device did not confirm it is an 8.8-inch panel.");
+
+            byte[] command = Encoding.ASCII.GetBytes("5f3759df");
+            SendReport(handle, caps.OutputLength, 1, command, "send the first sensor-mode command");
+            SendReport(handle, caps.OutputLength, 2, command, "send the final sensor-mode command");
+        }
+    }
+
+    private static void SendReport(SafeFileHandle handle, int length, int offset, byte[] payload, string operation)
+    {
+        var report = new byte[length];
+        Buffer.BlockCopy(payload, 0, report, offset, payload.Length);
+        if (TransferReport(handle, report, false, operation) != report.Length)
+            throw new IOException("Incomplete HID transfer while trying to " + operation + ".");
+    }
+
+    private static uint TransferReport(SafeFileHandle handle, byte[] report, bool read, string operation)
+    {
+        using (var completed = new EventWaitHandle(false, EventResetMode.ManualReset))
+        {
+            var pinned = GCHandle.Alloc(report, GCHandleType.Pinned);
+            IntPtr overlapped = IntPtr.Zero;
+            try
+            {
+                overlapped = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(NativeOverlapped)));
+                Marshal.StructureToPtr(new NativeOverlapped { EventHandle = completed.SafeWaitHandle.DangerousGetHandle() }, overlapped, false);
+
+                bool ready = read
+                    ? ReadFile(handle, pinned.AddrOfPinnedObject(), (uint)report.Length, IntPtr.Zero, overlapped)
+                    : WriteFile(handle, pinned.AddrOfPinnedObject(), (uint)report.Length, IntPtr.Zero, overlapped);
+                if (!ready)
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error != 997) throw HidError("Could not " + operation, error);
+                    if (!completed.WaitOne(1250))
+                    {
+                        // Drain the cancelled I/O before freeing the native buffers.
+                        CancelIoEx(handle, overlapped);
+                        uint ignored;
+                        GetOverlappedResult(handle, overlapped, out ignored, true);
+                        throw new IOException("Timed out while trying to " + operation + ".");
+                    }
+                }
+
+                uint bytes;
+                if (!GetOverlappedResult(handle, overlapped, out bytes, false))
+                    throw HidError("Could not " + operation, Marshal.GetLastWin32Error());
+                return bytes;
+            }
+            finally
+            {
+                if (overlapped != IntPtr.Zero) Marshal.FreeHGlobal(overlapped);
+                pinned.Free();
             }
         }
     }
 
-    private static void SendReport(FileStream stream, int offset, byte[] payload)
+    private static IOException HidError(string operation, int error)
     {
-        var report = new byte[65];
-        Buffer.BlockCopy(payload, 0, report, offset, payload.Length);
-        Task write = stream.WriteAsync(report, 0, report.Length);
-        CompleteReport(write);
+        return new IOException(operation + " (Windows error " + error + ").", new Win32Exception(error));
     }
 
-    private static int CompleteReport(Task operation)
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HidCaps
     {
-        if (Task.WhenAny(operation, Task.Delay(1250)).GetAwaiter().GetResult() != operation)
-            throw new IOException("The HID device is not responding.");
-        operation.GetAwaiter().GetResult();
-        var read = operation as Task<int>;
-        return read == null ? 0 : read.Result;
+        public ushort Usage, UsagePage, InputLength, OutputLength, FeatureLength;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 26)]
+        public ushort[] RemainingFields;
     }
+
+    [DllImport("hid.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    private static extern bool HidD_GetPreparsedData(SafeFileHandle handle, out IntPtr data);
+    [DllImport("hid.dll")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    private static extern bool HidD_FreePreparsedData(IntPtr data);
+    [DllImport("hid.dll")]
+    private static extern int HidP_GetCaps(IntPtr data, out HidCaps caps);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ReadFile(SafeFileHandle handle, IntPtr buffer, uint length, IntPtr bytesRead, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool WriteFile(SafeFileHandle handle, IntPtr buffer, uint length, IntPtr bytesWritten, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetOverlappedResult(SafeFileHandle handle, IntPtr overlapped, out uint bytes, bool wait);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CancelIoEx(SafeFileHandle handle, IntPtr overlapped);
 
     private byte[] Exchange(byte command, byte[] payload)
     {
