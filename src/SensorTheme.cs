@@ -3,11 +3,15 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 
+internal enum SensorLayout { Terminal, Instrument, Touge, Clean }
+
 internal sealed class SensorTheme
 {
     internal readonly string Id, Name;
     internal readonly Color Background, Surface, Border, Text;
     internal readonly Color[] Accents;
+    internal readonly SensorLayout Layout;
+    internal readonly string Video;
 
     internal static readonly SensorTheme Classic = new SensorTheme("classic", new[]
     {
@@ -18,7 +22,25 @@ internal sealed class SensorTheme
     {
         Id = id;
         Name = lines[0].Trim();
-        var colors = lines.Skip(1).Select(line =>
+        Layout = SensorLayout.Terminal;
+        if (lines.Length >= 9)
+        {
+            SensorLayout layout;
+            string name = lines[8].Trim();
+            if (!Enum.TryParse(name, true, out layout) ||
+                !string.Equals(layout.ToString(), name, StringComparison.OrdinalIgnoreCase))
+                throw new FormatException("Unknown sensor layout.");
+            Layout = layout;
+        }
+        if (lines.Length == 10)
+        {
+            string file = lines[9].Trim();
+            if (file != Path.GetFileName(file) || file.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                !string.Equals(Path.GetExtension(file), ".h264", StringComparison.OrdinalIgnoreCase))
+                throw new FormatException("Expected a local .h264 video filename.");
+            Video = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "themes", file);
+        }
+        var colors = lines.Skip(1).Take(7).Select(line =>
         {
             string hex = line.Trim();
             if (hex.Length != 7 || hex[0] != '#') throw new FormatException("Expected #RRGGBB.");
@@ -45,8 +67,8 @@ internal sealed class SensorTheme
                 try
                 {
                     string[] lines = File.ReadAllLines(path);
-                    if (lines.Length != 8 || string.IsNullOrWhiteSpace(lines[0]))
-                        throw new FormatException("Expected a theme name and seven colors.");
+                    if (lines.Length < 8 || lines.Length > 10 || string.IsNullOrWhiteSpace(lines[0]))
+                        throw new FormatException("Expected a theme name, seven colors, and optional layout and video.");
                     themes.Add(new SensorTheme(id, lines));
                 }
                 catch (IOException error) { log(id + ": " + error.Message); }

@@ -18,7 +18,12 @@ internal sealed class Program : Form
     private readonly NotifyIcon tray;
     private int orientation;
     private SensorTheme sensorTheme = SensorTheme.Classic;
+    private ImportedSkin importedSkin;
+    private string importedLayout;
+    private static readonly string ImportedThemes = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KryoView", "themes");
     private SensorTheme lastTheme;
+    private bool lastFrameWasImported;
     private readonly CheckBox hidePackets = new CheckBox { Text = "Hide USB packet transfers", AutoSize = true, Checked = true };
     private readonly System.Collections.Generic.List<Tuple<string, bool>> logEntries =
         new System.Collections.Generic.List<Tuple<string, bool>>();
@@ -36,7 +41,11 @@ internal sealed class Program : Form
     };
     private string lastStatus;
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer videoTimer = new System.Windows.Forms.Timer { Interval = 30 };
     private Panel panel;
+    private VideoLoop video;
+    private string videoOverride;
+    private string activeVideo;
     private string panelId;
     private bool desktopConnected;
     private bool enabled;
@@ -129,7 +138,9 @@ internal sealed class Program : Form
             Log(enabled ? "Sensors requested." : "Sensors stopped.");
             if (!enabled)
             {
-                ClosePanel();
+                busy = true;
+                try { await Task.Run(() => ClosePanel()); }
+                finally { busy = false; }
                 Log("USB session closed after stopping sensor updates.");
             }
             sensors.Text = enabled ? "Stop sensors" : "Sensors";
@@ -147,6 +158,10 @@ internal sealed class Program : Form
                 string id = settings.GetValue("SensorTheme", "") as string;
                 sensorTheme = SensorTheme.Load(Log).FirstOrDefault(theme =>
                     string.Equals(theme.Id, id, StringComparison.OrdinalIgnoreCase)) ?? SensorTheme.Classic;
+                string importedId = settings.GetValue("ImportedTheme", "") as string;
+                Guid importedGuid;
+                if (Guid.TryParseExact(importedId, "N", out importedGuid))
+                    TrySelectImported(Path.Combine(ImportedThemes, importedGuid.ToString("N"), "layout.xml"), false);
             }
         }
 
@@ -177,17 +192,55 @@ internal sealed class Program : Form
             {
                 var item = new ToolStripMenuItem(theme.Name)
                 {
-                    Checked = string.Equals(sensorTheme.Id, theme.Id, StringComparison.OrdinalIgnoreCase)
+                    Checked = importedSkin == null && string.Equals(sensorTheme.Id, theme.Id, StringComparison.OrdinalIgnoreCase)
                 };
                 item.Click += async delegate
                 {
                     sensorTheme = theme;
+                    importedSkin = null;
+                    importedLayout = null;
+                    SaveSetting("ImportedTheme", "");
                     SaveSetting("SensorTheme", theme.Id);
                     Log("Sensor theme selected: " + theme.Name);
                     if (enabled) await UpdatePanel();
                 };
                 menu.Items.Add(item);
             }
+            menu.Items.Add(new ToolStripSeparator());
+            if (Directory.Exists(ImportedThemes))
+            {
+                foreach (string folder in Directory.GetDirectories(ImportedThemes))
+                {
+                    string path = Path.Combine(folder, "layout.xml");
+                    if (!File.Exists(path)) continue;
+                    try
+                    {
+                        var skin = new ImportedSkin(path);
+                        var item = new ToolStripMenuItem(skin.Name) { Checked = importedLayout == path };
+                        item.Click += async delegate
+                        {
+                            if (TrySelectImported(path, true) && enabled) await UpdatePanel();
+                        };
+                        menu.Items.Add(item);
+                    }
+                    catch (Exception error) { Log("Could not open imported theme. " + error.Message); }
+                }
+            }
+            menu.Items.Add("Import TURZX theme…", null, ImportTheme);
+            var edit = menu.Items.Add("Edit imported labels…", null, delegate
+            {
+                try { Process.Start("notepad.exe", "\"" + importedLayout + "\""); }
+                catch (Exception error) { Log(error.Message); }
+            });
+            edit.Enabled = importedLayout != null;
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Choose video background…", null, ChooseVideo);
+            var resetVideo = menu.Items.Add("Use theme background", null, async delegate
+            {
+                videoOverride = null;
+                await UpdatePanel();
+            });
+            resetVideo.Enabled = videoOverride != null;
             ShowMenu(menu, (Control)sender);
         });
 
@@ -211,6 +264,7 @@ internal sealed class Program : Form
         tray = new NotifyIcon { Text = "KryoView", Icon = Icon, ContextMenuStrip = trayMenu, Visible = true };
         tray.DoubleClick += delegate { Reopen(); };
         timer.Tick += async delegate { await UpdatePanel(); };
+        videoTimer.Tick += async delegate { await AdvanceVideo(); };
         Shown += async delegate { timer.Start(); await UpdatePanel(); };
     }
 
@@ -238,9 +292,11 @@ internal sealed class Program : Form
             return;
         }
         timer.Stop();
+        videoTimer.Stop();
         if (!busy) ClosePanel();
         tray.Dispose();
         timer.Dispose();
+        videoTimer.Dispose();
         base.OnFormClosing(e);
     }
 
@@ -276,6 +332,8 @@ internal sealed class Program : Form
             {
                 int angle = orientation;
                 SensorTheme theme = sensorTheme;
+                ImportedSkin imported = importedSkin;
+                string background = videoOverride ?? (imported == null ? theme.Video : null);
                 await Task.Run(delegate
                 {
                     if (panel == null) panel = new Panel(panelId, Log, LogPacket);
@@ -284,19 +342,41 @@ internal sealed class Program : Form
                         panel.StartSensorDisplay();
                         sampler = new SensorSampler();
                     }
+                    if (!string.Equals(background, activeVideo, StringComparison.OrdinalIgnoreCase))
+                    {
+                        CloseVideo();
+                        if (background != null)
+                        {
+                            video = new VideoLoop(panel, background);
+                            activeVideo = background;
+                            Log("Video background started: " + Path.GetFileName(background));
+                        }
+                        lastReadings = null;
+                    }
                     string[] readings = sampler.Sample();
-                    if (lastReadings != null && angle == lastAngle && theme == lastTheme && readings.SequenceEqual(lastReadings)) return;
+                    if (imported == null && !lastFrameWasImported && lastReadings != null &&
+                        angle == lastAngle && theme == lastTheme && readings.SequenceEqual(lastReadings)) return;
 
-                    using (Bitmap bitmap = SensorSkin.Draw(readings, angle, theme))
+                    using (Bitmap bitmap = imported == null ? SensorSkin.Draw(readings, angle, theme, video != null) :
+                        imported.Draw(readings, angle % 2 == 0, video != null))
                     using (var buffer = new MemoryStream())
                     {
                         SensorSkin.RotateForPanel(bitmap, angle);
-                        SensorSkin.SaveJpeg(bitmap, buffer);
-                        panel.ShowFrame(buffer.ToArray());
+                        if (video == null)
+                        {
+                            SensorSkin.SaveJpeg(bitmap, buffer);
+                            panel.ShowFrame(buffer.ToArray());
+                        }
+                        else
+                        {
+                            bitmap.Save(buffer, ImageFormat.Png);
+                            panel.ShowOverlay(buffer.ToArray());
+                        }
                     }
                     lastReadings = readings;
                     lastAngle = angle;
                     lastTheme = theme;
+                    lastFrameWasImported = imported != null;
                 });
                 SetStatus("TURZX 8.8″ V1.x · Dashboard active");
             }
@@ -307,7 +387,122 @@ internal sealed class Program : Form
             nextTransfer = DateTime.UtcNow.AddSeconds(10);
             MessageStatus(error.Message);
         }
-        finally { busy = false; }
+        finally
+        {
+            if (!IsDisposed) videoTimer.Enabled = video != null;
+            busy = false;
+        }
+    }
+
+    private async void ChooseVideo(object sender, EventArgs e)
+    {
+        using (var dialog = new OpenFileDialog
+        {
+            Title = "Select an H.264 video background",
+            Filter = "Annex B H.264 video (*.h264)|*.h264",
+            RestoreDirectory = true
+        })
+        {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            videoOverride = dialog.FileName;
+            Log("Video background selected: " + Path.GetFileName(videoOverride));
+        }
+        await UpdatePanel();
+    }
+
+    private bool TrySelectImported(string path, bool save)
+    {
+        try
+        {
+            importedSkin = new ImportedSkin(path);
+            importedLayout = path;
+            if ((orientation % 2 == 0) != importedSkin.Landscape)
+                orientation = importedSkin.Landscape ? 0 : 1;
+            if (save)
+            {
+                SaveSetting("ImportedTheme", Path.GetFileName(Path.GetDirectoryName(path)));
+                SaveSetting("Orientation", orientation);
+                Log("Imported theme selected: " + importedSkin.Name);
+            }
+            return true;
+        }
+        catch (Exception error)
+        {
+            Log("Could not load imported theme. " + error.Message);
+            return false;
+        }
+    }
+
+    private async void ImportTheme(object sender, EventArgs e)
+    {
+        string source;
+        using (var dialog = new OpenFileDialog
+        {
+            Title = "Import a TURZX 8.8-inch theme",
+            Filter = "TURZX themes (*.turtheme)|*.turtheme",
+            RestoreDirectory = true
+        })
+        {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            source = dialog.FileName;
+        }
+
+        string destination = Path.Combine(ImportedThemes, Guid.NewGuid().ToString("N"));
+        string script = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Import-Turzx.ps1");
+        try
+        {
+            Log("Importing " + Path.GetFileName(source) + "…");
+            using (var converter = Process.Start(new ProcessStartInfo
+            {
+                FileName = "pwsh.exe",
+                Arguments = "-NoProfile -NonInteractive -File \"" + script + "\" -Source \"" +
+                    source + "\" -Destination \"" + destination + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }))
+            {
+                Task<string> output = converter.StandardOutput.ReadToEndAsync();
+                Task<string> errors = converter.StandardError.ReadToEndAsync();
+                await Task.Run(() => converter.WaitForExit());
+                string report = (await output).Trim();
+                if (report.Length > 0) Log(report.Replace(Environment.NewLine, " | "));
+                if (converter.ExitCode != 0)
+                    throw new IOException((await errors).Trim());
+            }
+            if (TrySelectImported(Path.Combine(destination, "layout.xml"), true) && enabled)
+                await UpdatePanel();
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            Log("Theme import requires PowerShell 7 (pwsh.exe) and a compatible .NET Desktop Runtime.");
+        }
+        catch (Exception error) { Log("Theme import failed. " + error.Message); }
+    }
+
+    private async Task AdvanceVideo()
+    {
+        if (busy || !enabled || video == null) return;
+        busy = true;
+        try
+        {
+            await Task.Run(delegate
+            {
+                try { video.Advance(panel); }
+                catch { ClosePanel(); throw; }
+            });
+        }
+        catch (Exception error)
+        {
+            nextTransfer = DateTime.UtcNow.AddSeconds(10);
+            MessageStatus(error.Message);
+        }
+        finally
+        {
+            if (!IsDisposed) videoTimer.Enabled = video != null;
+            busy = false;
+        }
     }
 
     private void SetStatus(string message)
@@ -409,6 +604,7 @@ internal sealed class Program : Form
                 try
                 {
                     if (panel == null) panel = new Panel(selectedPanel, Log, LogPacket, synchronize: false);
+                    CloseVideo();
                     panel.EnterDesktop();
                 }
                 finally { ClosePanel(); }
@@ -499,10 +695,21 @@ internal sealed class Program : Form
 
     private void ClosePanel()
     {
+        CloseVideo();
         if (sampler != null) sampler.Dispose();
         sampler = null;
         lastReadings = null;
         if (panel != null) panel.Dispose();
         panel = null;
+    }
+
+    private void CloseVideo()
+    {
+        if (video == null) return;
+        video.Dispose();
+        video = null;
+        activeVideo = null;
+        try { panel.StopVideo(); }
+        catch (IOException error) { Log(error.Message); }
     }
 }

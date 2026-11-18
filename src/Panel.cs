@@ -173,6 +173,32 @@ internal sealed class Panel : IDisposable
         Exchange(101, jpeg, "send the JPEG frame");
     }
 
+    internal void ShowOverlay(byte[] png)
+    {
+        if (png.Length > 1048576) throw new IOException("The overlay is too large for the panel.");
+        Exchange(102, png, "send the PNG overlay");
+    }
+
+    internal int StartVideo()
+    {
+        Send(15, 25);
+        byte[] reply = Exchange(17, null, "query video chunk size", 12);
+        int size = (reply[8] << 24) | (reply[9] << 16) | (reply[10] << 8) | reply[11];
+        return size > 0 && size <= 1048576 ? size : 202752;
+    }
+
+    internal bool SendVideoChunk(byte[] data, bool last)
+    {
+        return Exchange(121, data, "stream H.264", 9, endOfVideo: last)[8] > 3;
+    }
+
+    internal bool HasVideoCapacity()
+    {
+        return Exchange(122, null, "query video queue", 9)[8] <= 2;
+    }
+
+    internal void StopVideo() { Send(123); }
+
     internal void EnterDesktop()
     {
         // The protocol does not define an acknowledgement for the mode command.
@@ -317,9 +343,9 @@ internal sealed class Panel : IDisposable
     private static extern bool CancelIoEx(SafeFileHandle handle, IntPtr overlapped);
 
     private byte[] Exchange(byte command, byte[] payload, string operation, int minimumReplyLength = 1,
-        bool allowMissingReply = false)
+        bool allowMissingReply = false, bool endOfVideo = false)
     {
-        Write(command, payload);
+        Write(command, payload, endOfVideo: endOfVideo);
         var elapsed = Stopwatch.StartNew();
         var response = new byte[512];
         // Each preceding command can leave both an empty transfer and a reply queued.
@@ -349,7 +375,8 @@ internal sealed class Panel : IDisposable
         throw new IOException("No matching reply while trying to " + operation + " (USB command " + command + ").");
     }
 
-    internal static byte[] Packet(byte command, byte[] payload, int milliseconds, byte argument = 0)
+    internal static byte[] Packet(byte command, byte[] payload, int milliseconds, byte argument = 0,
+        bool endOfVideo = false)
     {
         int length = payload == null ? 0 : payload.Length;
         var buffer = new byte[512 + length];
@@ -361,6 +388,7 @@ internal sealed class Panel : IDisposable
         for (int offset = 0; offset < 4; offset++)
             header[8 + offset] = (byte)(length >> (24 - 8 * offset));
         if (payload == null) header[8] = argument;
+        if (endOfVideo) header[12] = 1;
         using (var des = DES.Create())
         {
             des.Padding = PaddingMode.None;
@@ -374,9 +402,9 @@ internal sealed class Panel : IDisposable
         return buffer;
     }
 
-    private void Write(byte command, byte[] payload, byte argument = 0)
+    private void Write(byte command, byte[] payload, byte argument = 0, bool endOfVideo = false)
     {
-        byte[] packet = Packet(command, payload, (int)DateTime.Now.TimeOfDay.TotalMilliseconds, argument);
+        byte[] packet = Packet(command, payload, (int)DateTime.Now.TimeOfDay.TotalMilliseconds, argument, endOfVideo);
         var elapsed = Stopwatch.StartNew();
         uint written;
         if (!WinUsb_WritePipe(usb, 0x01, packet, (uint)packet.Length, out written, IntPtr.Zero))

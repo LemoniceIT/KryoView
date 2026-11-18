@@ -29,9 +29,25 @@ KryoView detects Rev C panels. Monitor mode requires the manufacturer's display 
 
 ## Sensor themes and logs
 
-Open **Sensor themes** to choose Classic, Blueberry Arc, Harbor Dark, or Amber Terminal. To add a theme, copy a `.theme` file in the `themes` folder next to the executable, then edit it. Each file has eight lines. The first is the display name, followed by seven `#RRGGBB` colors in this order: background, card surface, border, foreground, CPU, GPU, and RAM. Remove the file to remove its menu entry. If a saved theme is absent at startup, KryoView opens with Classic.
+Open **Sensor themes** to choose a dashboard. Touge Night uses a retro instrument cluster, Prism Original, Snow, and Ink share a gauge layout in three palettes, and Clean Dark HUD uses monochrome cards. Classic and the three terminal themes are also available.
+
+To add a theme, copy a `.theme` file in the `themes` folder next to the executable, then edit it. The first line is the display name, followed by seven `#RRGGBB` colors in this order: background, card surface, border, foreground, CPU, GPU, and RAM. The optional ninth line selects `Terminal`, `Instrument`, `Touge`, or `Clean`. Remove the file to remove its menu entry. If a saved theme is absent at startup, KryoView opens with Classic.
 
 **Hide USB packet transfers** filters the terminal while keeping status messages and errors visible. Clear the checkbox to show recent packet timings again.
+
+### Experimental video backgrounds
+
+Choose **Sensor themes → Choose video background** to loop an Annex B H.264 elementary stream behind any dashboard. Use a clip encoded at 25 FPS and prepared for the panel's native 480 × 1920 frame orientation. Select **Use theme background** to restore the theme's default. A theme can also specify its own clip by adding the local `.h264` filename as the tenth line and placing the clip in the `themes` folder.
+
+KryoView streams H.264 to the device and sends the sensor layer as a transparent PNG. Static dashboards continue to use JPEG. The streaming commands and overlay need validation on the physical unit. The file picker accepts raw H.264 streams.
+
+### Importing TURZX themes
+
+Choose **Sensor themes → Import TURZX theme** and select an 8.8-inch `.turtheme`. The converter requires PowerShell 7 and a compatible .NET Desktop Runtime exposing `System.Formats.Nrbf`. It reads theme records as data and converts supported embedded PNGs, text, bars, and arcs into a KryoView layout. The import stores files under `%LOCALAPPDATA%\KryoView\themes`.
+
+CPU and GPU model labels come from Windows. CPU, GPU, and RAM utilization, disk utilization, memory, network rates, and calendar widgets use live local data. Unsupported readings appear as a dash or an empty gauge. Video references and unsupported widget types are skipped. Original fonts are used when installed, with Windows font fallback otherwise. Some vendor styling, including gradients and segmented gauges, is approximated.
+
+For custom labels, choose **Edit imported labels**, edit the `label` attributes in `layout.xml`, save, and select the imported theme again to reload it.
 
 ## License
 

@@ -12,15 +12,18 @@ internal static class SensorSkin
         "CPU", "GPU", "RAM", "CPU THREADS", "RAM USED", "RAM AVAILABLE",
         "SYSTEM DRIVE FREE", "NETWORK ↓", "NETWORK ↑", "UPTIME", "POWER"
     };
-    internal static Bitmap Draw(string[] readings, int angle, SensorTheme theme = null)
+    internal static Bitmap Draw(string[] readings, int angle, SensorTheme theme = null, bool overlay = false)
     {
         theme = theme ?? SensorTheme.Classic;
+        if (theme.Layout != SensorLayout.Terminal)
+            return InstrumentSkin.Draw(readings, angle % 2 == 0, theme, overlay);
         bool terminal = theme != SensorTheme.Classic;
         bool horizontal = angle % 2 == 0;
-        var frame = new Bitmap(horizontal ? 1920 : 480, horizontal ? 480 : 1920, PixelFormat.Format24bppRgb);
+        var frame = new Bitmap(horizontal ? 1920 : 480, horizontal ? 480 : 1920,
+            overlay ? PixelFormat.Format32bppArgb : PixelFormat.Format24bppRgb);
         using (var canvas = Graphics.FromImage(frame))
         using (var background = new SolidBrush(theme.Background))
-        using (var surface = new SolidBrush(theme.Surface))
+        using (var surface = new SolidBrush(overlay ? Color.FromArgb(155, theme.Surface) : theme.Surface))
         using (var border = new Pen(theme.Border, terminal ? 1 : 2))
         using (var inactive = new SolidBrush(theme.Border))
         using (var muted = new SolidBrush(terminal ? theme.Accents[1] : Color.FromArgb(183, 195, 221)))
@@ -31,7 +34,7 @@ internal static class SensorSkin
         using (var value = new Font("Consolas", horizontal ? 29 : 31, FontStyle.Bold, GraphicsUnit.Pixel))
         {
             canvas.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            canvas.FillRectangle(background, 0, 0, frame.Width, frame.Height);
+            canvas.Clear(overlay ? Color.Transparent : theme.Background);
             int margin = horizontal ? 38 : 24;
             canvas.DrawString(terminal ? "> KRYOVIEW" : "> KryoView", heading, ink, margin, horizontal ? 24 : 32);
             int divider = horizontal ? 78 : 106;
