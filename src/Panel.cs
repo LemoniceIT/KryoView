@@ -80,8 +80,7 @@ internal sealed class Panel : IDisposable
                         if (!WinUsb_SetPipePolicy(usb, 0x81, 3, 4, ref timeout) ||
                             !WinUsb_SetPipePolicy(usb, 0x01, 3, 4, ref timeout))
                             throw new Win32Exception();
-                        if (Exchange(10, null)[0] != 10)
-                            throw new IOException("Unexpected response from the panel.");
+                        Exchange(10, null, "synchronize with the panel");
                         return;
                     }
                     catch
@@ -98,23 +97,14 @@ internal sealed class Panel : IDisposable
 
     internal void StopLocalPlayback()
     {
-        // The firmware can keep its default background running after switching modes.
-        Exchange(111, null);
-        for (int attempt = 0; attempt < 10; attempt++)
-        {
-            byte[] reply = Exchange(112, null);
-            if (reply.Length < 9 || reply[0] != 112)
-                throw new IOException("Unexpected playback status from the panel.");
-            if (reply[8] == 0) return;
-            Thread.Sleep(100);
-        }
-        throw new IOException("The panel did not stop its local playback.");
+        // The firmware can accept this command without returning a response.
+        Write(Packet(111, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
     }
 
     internal void ShowFrame(byte[] jpeg)
     {
         if (jpeg.Length > 1048576) throw new IOException("The image is too large for the panel.");
-        if (Exchange(101, jpeg)[0] != 101) throw new IOException("The panel did not acknowledge the frame.");
+        Exchange(101, jpeg, "send the JPEG frame");
     }
 
     internal void EnterDesktop()
@@ -255,16 +245,23 @@ internal sealed class Panel : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CancelIoEx(SafeFileHandle handle, IntPtr overlapped);
 
-    private byte[] Exchange(byte command, byte[] payload)
+    private void Exchange(byte command, byte[] payload, string operation)
     {
         Write(Packet(command, payload, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
         var response = new byte[512];
-        uint received;
-        if (!WinUsb_ReadPipe(usb, 0x81, response, (uint)response.Length, out received, IntPtr.Zero))
-            throw new Win32Exception();
-        if (received == 0) throw new IOException("Empty USB response.");
-        if (received < response.Length) Array.Resize(ref response, (int)received);
-        return response;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            uint received;
+            if (!WinUsb_ReadPipe(usb, 0x81, response, (uint)response.Length, out received, IntPtr.Zero))
+            {
+                int error = Marshal.GetLastWin32Error();
+                throw new IOException("Could not " + operation + " (USB command " + command +
+                    ", Windows error " + error + ").", new Win32Exception(error));
+            }
+            // Stop playback and earlier transfers can leave replies queued on the same endpoint.
+            if (received > 0 && response[0] == command) return;
+        }
+        throw new IOException("No matching reply while trying to " + operation + " (USB command " + command + ").");
     }
 
     internal static byte[] Packet(byte command, byte[] payload, int milliseconds)

@@ -82,7 +82,7 @@ internal sealed class Program : Form
 
     private Program()
     {
-        Text = "KryoView";
+        Text = "KryoView " + Application.ProductVersion;
         Icon = SystemIcons.Application;
         BackColor = Background;
         ForeColor = Color.WhiteSmoke;
