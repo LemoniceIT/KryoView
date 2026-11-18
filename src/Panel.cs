@@ -109,7 +109,7 @@ internal sealed class Panel : IDisposable
         Write(Packet(11, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
     }
 
-    internal static void ExitDesktop()
+    internal static bool ExitDesktop(Func<bool> confirmUnidentifiedPanel)
     {
         var hid = new Guid("4d1e55b2-f16f-11cf-88cb-001111000030");
         uint size;
@@ -145,12 +145,19 @@ internal sealed class Panel : IDisposable
 
             SendReport(handle, caps.OutputLength, 1, new byte[] { 0xaa, 0x55, 0x33 }, "send the model query");
             var response = new byte[caps.InputLength];
-            if (TransferReport(handle, response, true, "read the model reply") < 4 || response[0] != 0 || response[3] != 0x88)
+            uint bytesRead = 0;
+            bool receivedModelReply = true;
+            try { bytesRead = TransferReport(handle, response, true, "read the model reply"); }
+            catch (TimeoutException) { receivedModelReply = false; }
+
+            if (receivedModelReply && (bytesRead < 4 || response[0] != 0 || response[3] != 0x88))
                 throw new IOException("The HID device did not confirm it is an 8.8-inch panel.");
+            if (!receivedModelReply && !confirmUnidentifiedPanel()) return false;
 
             byte[] command = Encoding.ASCII.GetBytes("5f3759df");
             SendReport(handle, caps.OutputLength, 1, command, "send the first sensor-mode command");
             SendReport(handle, caps.OutputLength, 2, command, "send the final sensor-mode command");
+            return true;
         }
     }
 
@@ -186,7 +193,7 @@ internal sealed class Panel : IDisposable
                         CancelIoEx(handle, overlapped);
                         uint ignored;
                         GetOverlappedResult(handle, overlapped, out ignored, true);
-                        throw new IOException("Timed out while trying to " + operation + ".");
+                        throw new TimeoutException("Timed out while trying to " + operation + ".");
                     }
                 }
 

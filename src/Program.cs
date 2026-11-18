@@ -308,7 +308,17 @@ internal sealed class Program : Form
         busy = true;
         try
         {
-            await Task.Run(() => Panel.ExitDesktop());
+            status.Text = "Querying the TURZX panel model…";
+            bool switched = await Task.Run(() => Panel.ExitDesktop(() => (bool)Invoke(new Func<bool>(() =>
+                MessageBox.Show(this,
+                    "The panel did not answer the model query. If the connected TURZX panel is an 8.8-inch model, select Yes to try switching it to Sensors.",
+                    "Confirm TURZX panel model", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2) == DialogResult.Yes))));
+            if (!switched)
+            {
+                MessageStatus("Sensor mode switch cancelled. The panel remains in monitor mode.");
+                return;
+            }
             enabled = true;
             sensors.Text = "Stop sensors";
             desktopConnected = false;
