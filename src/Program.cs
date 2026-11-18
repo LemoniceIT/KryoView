@@ -16,10 +16,25 @@ internal sealed class Program : Form
     private static readonly string[] Orientations =
         { "Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)" };
     private readonly NotifyIcon tray;
-    private readonly ComboBox orientation = new ComboBox();
+    private int orientation;
+    private SensorTheme sensorTheme = SensorTheme.Classic;
+    private SensorTheme lastTheme;
+    private readonly CheckBox hidePackets = new CheckBox { Text = "Hide USB packet transfers", AutoSize = true, Checked = true };
+    private readonly System.Collections.Generic.List<Tuple<string, bool>> logEntries =
+        new System.Collections.Generic.List<Tuple<string, bool>>();
     private readonly Button sensors;
     private readonly Button desktop;
-    private readonly Label status = new Label();
+    private readonly TextBox log = new TextBox
+    {
+        Dock = DockStyle.Fill,
+        Multiline = true,
+        ReadOnly = true,
+        WordWrap = false,
+        ScrollBars = ScrollBars.Both,
+        BackColor = Color.FromArgb(15, 17, 23),
+        ForeColor = Color.WhiteSmoke
+    };
+    private string lastStatus;
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 1000 };
     private Panel panel;
     private string panelId;
@@ -42,13 +57,14 @@ internal sealed class Program : Form
             if (BitConverter.ToString(packet, 0, 16) != "CC-FF-A6-FB-53-02-10-74-FD-8E-C7-12-B3-92-C6-A6" ||
                 BitConverter.ToString(packet, 496, 16) != "EC-54-35-A2-83-9F-C6-A3-00-00-00-00-00-00-A1-1A")
                 Environment.Exit(1);
+            foreach (SensorTheme theme in SensorTheme.Load(message => Environment.Exit(4)))
             for (int angle = 0; angle < 4; angle++)
             {
                 using (Bitmap frame = SensorSkin.Draw(new[]
                 {
                     "42%", "31%", "65%", "16", "10.4 GiB", "5.6 GiB", "402.1 GiB",
                     "124 KiB/s", "20 KiB/s", "01h 23m", "AC power"
-                }, angle))
+                }, angle, theme))
                 {
                     bool horizontal = angle % 2 == 0;
                     if (frame.Width != (horizontal ? 1920 : 480) ||
@@ -83,24 +99,22 @@ internal sealed class Program : Form
     private Program()
     {
         Text = "KryoView " + Application.ProductVersion;
-        Icon = SystemIcons.Application;
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
         BackColor = Background;
         ForeColor = Color.WhiteSmoke;
         Font = new Font("Consolas", 11);
-        MinimumSize = new Size(670, 235);
-        ClientSize = new Size(720, 205);
+        MinimumSize = new Size(750, 350);
+        ClientSize = new Size(780, 440);
         StartPosition = FormStartPosition.CenterScreen;
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, RowCount = 4 };
         Controls.Add(layout);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { Text = "> KryoView", ForeColor = Accent, Font = new Font("Consolas", 20, FontStyle.Bold), AutoSize = true });
-        status.Dock = DockStyle.Fill;
-        status.Text = "Looking for the panel…";
-        layout.Controls.Add(status);
+
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
         sensors = AddButton(actions, "Sensors", async delegate
@@ -112,39 +126,89 @@ internal sealed class Program : Form
                 return;
             }
             enabled = !enabled;
+            Log(enabled ? "Sensors requested." : "Sensors stopped.");
+            if (!enabled)
+            {
+                ClosePanel();
+                Log("USB session closed after stopping sensor updates.");
+            }
             sensors.Text = enabled ? "Stop sensors" : "Sensors";
             nextProbe = DateTime.MinValue;
             nextTransfer = DateTime.MinValue;
             await UpdatePanel();
         });
         desktop = AddButton(actions, "USB monitor", EnableDesktop);
-        AddButton(actions, "Display settings", delegate { Process.Start("ms-settings:display"); });
-        orientation.DropDownStyle = ComboBoxStyle.DropDownList;
-        orientation.Width = 190;
-        orientation.BackColor = Color.FromArgb(47, 50, 63);
-        orientation.ForeColor = ForeColor;
-        orientation.Margin = new Padding(7, 8, 0, 0);
-        orientation.Items.AddRange(Orientations);
         using (var settings = Registry.CurrentUser.OpenSubKey(@"Software\KryoView"))
         {
-            int saved = settings == null ? 0 : (settings.GetValue("Orientation", 0) as int? ?? 0);
-            orientation.SelectedIndex = saved >= 0 && saved < Orientations.Length ? saved : 0;
+            if (settings != null)
+            {
+                orientation = Math.Max(0, Math.Min(3, (settings.GetValue("Orientation", 0) as int?) ?? 0));
+                hidePackets.Checked = (settings.GetValue("HidePackets", 1) as int?) != 0;
+                string id = settings.GetValue("SensorTheme", "") as string;
+                sensorTheme = SensorTheme.Load(Log).FirstOrDefault(theme =>
+                    string.Equals(theme.Id, id, StringComparison.OrdinalIgnoreCase)) ?? SensorTheme.Classic;
+            }
         }
-        orientation.SelectedIndexChanged += async delegate
-        {
-            using (var settings = Registry.CurrentUser.CreateSubKey(@"Software\KryoView"))
-                settings.SetValue("Orientation", orientation.SelectedIndex);
-            await UpdatePanel();
-        };
-        actions.Controls.Add(orientation);
-        layout.Controls.Add(actions);
-        layout.Controls.Add(new Label { Text = "Close the window to keep KryoView running in the background.", ForeColor = Accent, AutoSize = true });
 
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Open KryoView", null, delegate { Reopen(); });
-        menu.Items.Add("Install TURZX display driver…", null, InstallDesktopDriver);
-        menu.Items.Add("Exit", null, delegate { exiting = true; Close(); });
-        tray = new NotifyIcon { Text = "KryoView", Icon = Icon, ContextMenuStrip = menu, Visible = true };
+        AddButton(actions, "Options", delegate(object sender, EventArgs e)
+        {
+            var menu = new ContextMenuStrip();
+            var orientationMenu = new ToolStripMenuItem("Orientation");
+            menu.Items.Add(orientationMenu);
+            for (int i = 0; i < Orientations.Length; i++)
+            {
+                int angle = i;
+                var item = new ToolStripMenuItem(Orientations[i]) { Checked = orientation == i };
+                item.Click += async delegate
+                {
+                    orientation = angle;
+                    SaveSetting("Orientation", angle);
+                    await UpdatePanel();
+                };
+                orientationMenu.DropDownItems.Add(item);
+            }
+            ShowMenu(menu, (Control)sender);
+        });
+
+        AddButton(actions, "Sensor themes", delegate(object sender, EventArgs e)
+        {
+            var menu = new ContextMenuStrip();
+            foreach (SensorTheme theme in SensorTheme.Load(Log))
+            {
+                var item = new ToolStripMenuItem(theme.Name)
+                {
+                    Checked = string.Equals(sensorTheme.Id, theme.Id, StringComparison.OrdinalIgnoreCase)
+                };
+                item.Click += async delegate
+                {
+                    sensorTheme = theme;
+                    SaveSetting("SensorTheme", theme.Id);
+                    Log("Sensor theme selected: " + theme.Name);
+                    if (enabled) await UpdatePanel();
+                };
+                menu.Items.Add(item);
+            }
+            ShowMenu(menu, (Control)sender);
+        });
+
+        hidePackets.CheckedChanged += delegate
+        {
+            SaveSetting("HidePackets", hidePackets.Checked ? 1 : 0);
+            log.Lines = logEntries.Where(entry => !entry.Item2 || !hidePackets.Checked)
+                .Select(entry => entry.Item1).ToArray();
+            log.SelectionStart = log.TextLength;
+            log.ScrollToCaret();
+        };
+        layout.Controls.Add(hidePackets);
+        layout.Controls.Add(actions);
+        layout.Controls.Add(log);
+        SetStatus("Looking for the panel…");
+
+        var trayMenu = new ContextMenuStrip();
+        trayMenu.Items.Add("Open KryoView", null, delegate { Reopen(); });
+        trayMenu.Items.Add("Install TURZX display driver…", null, InstallDesktopDriver);
+        trayMenu.Items.Add("Exit", null, delegate { exiting = true; Close(); });
+        tray = new NotifyIcon { Text = "KryoView", Icon = Icon, ContextMenuStrip = trayMenu, Visible = true };
         tray.DoubleClick += delegate { Reopen(); };
         timer.Tick += async delegate { await UpdatePanel(); };
         Shown += async delegate { timer.Start(); await UpdatePanel(); };
@@ -201,28 +265,29 @@ internal sealed class Program : Form
                     nextTransfer = DateTime.MinValue;
                 }
                 desktop.Enabled = panelId != null;
-                status.Text = candidates.Length > 1 ? "Multiple V1.x panels detected. Connect one panel to continue." :
+                SetStatus(candidates.Length > 1 ? "Multiple V1.x panels detected. Connect one panel to continue." :
                     panelId != null ? (panel == null ? "TURZX 8.8″ V1.x · USB" : "TURZX 8.8″ V1.x · Dashboard active") :
                     ids.Any(id => id.IndexOf("PID_AD", StringComparison.OrdinalIgnoreCase) >= 0)
                         ? "USB display detected. Check Windows Display settings." :
-                    ids.Length > 0 ? "Possible Rev C panel detected. USB support is in development." : "No TURZX 8.8″ panel detected.";
+                    ids.Length > 0 ? "Possible Rev C panel detected. USB support is in development." : "No TURZX 8.8″ panel detected.");
             }
             if (!enabled) ClosePanel();
             if (enabled && panelId != null && DateTime.UtcNow >= nextTransfer)
             {
-                int angle = orientation.SelectedIndex;
+                int angle = orientation;
+                SensorTheme theme = sensorTheme;
                 await Task.Run(delegate
                 {
-                    if (panel == null) panel = new Panel(panelId);
+                    if (panel == null) panel = new Panel(panelId, Log, LogPacket);
                     if (sampler == null)
                     {
-                        panel.StopLocalPlayback();
+                        panel.StartSensorDisplay();
                         sampler = new SensorSampler();
                     }
                     string[] readings = sampler.Sample();
-                    if (lastReadings != null && angle == lastAngle && readings.SequenceEqual(lastReadings)) return;
+                    if (lastReadings != null && angle == lastAngle && theme == lastTheme && readings.SequenceEqual(lastReadings)) return;
 
-                    using (Bitmap bitmap = SensorSkin.Draw(readings, angle))
+                    using (Bitmap bitmap = SensorSkin.Draw(readings, angle, theme))
                     using (var buffer = new MemoryStream())
                     {
                         SensorSkin.RotateForPanel(bitmap, angle);
@@ -231,8 +296,9 @@ internal sealed class Program : Form
                     }
                     lastReadings = readings;
                     lastAngle = angle;
+                    lastTheme = theme;
                 });
-                status.Text = "TURZX 8.8″ V1.x · Dashboard active";
+                SetStatus("TURZX 8.8″ V1.x · Dashboard active");
             }
         }
         catch (Exception error)
@@ -244,27 +310,91 @@ internal sealed class Program : Form
         finally { busy = false; }
     }
 
+    private void SetStatus(string message)
+    {
+        if (lastStatus == message) return;
+        lastStatus = message;
+        Log(message);
+    }
+
+    private static void SaveSetting(string name, object value)
+    {
+        using (var settings = Registry.CurrentUser.CreateSubKey(@"Software\KryoView"))
+            settings.SetValue(name, value);
+    }
+
+    private static void ShowMenu(ContextMenuStrip menu, Control button)
+    {
+        // WinForms can close the menu before dispatching the selected item's Click.
+        menu.Closed += delegate { button.BeginInvoke(new Action(menu.Dispose)); };
+        menu.Show(button, new Point(0, button.Height));
+    }
+
+    private void Log(string message) { Log(message, false); }
+
+    private void LogPacket(string message) { Log(message, true); }
+
+    private void Log(string message, bool packet)
+    {
+        string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message;
+        if (InvokeRequired)
+        {
+            if (!Disposing && !IsDisposed)
+            {
+                try { BeginInvoke(new Action(() => AppendLog(line, packet))); }
+                catch (InvalidOperationException) { }
+            }
+            return;
+        }
+        AppendLog(line, packet);
+    }
+
+    private void AppendLog(string line, bool packet)
+    {
+        if (IsDisposed) return;
+        if (logEntries.Count >= 2000) logEntries.RemoveRange(0, 200);
+        logEntries.Add(Tuple.Create(line, packet));
+        if (packet && hidePackets.Checked) return;
+        line += Environment.NewLine;
+        if (log.TextLength > 100000 && log.SelectionLength == 0)
+        {
+            int trim = log.Text.IndexOf('\n', 20000) + 1;
+            log.Select(0, trim);
+            log.SelectedText = "";
+        }
+        if (log.SelectionLength != 0)
+        {
+            int start = log.SelectionStart;
+            int length = log.SelectionLength;
+            log.AppendText(line);
+            log.Select(start, length);
+            return;
+        }
+        log.AppendText(line);
+    }
+
     private void MessageStatus(string message)
     {
-        status.Text = message;
+        Log(message);
         nextProbe = DateTime.UtcNow.AddSeconds(10);
     }
 
     private async void EnableDesktop(object sender, EventArgs e)
     {
         if (busy || panelId == null) return;
+        Log("USB monitor requested.");
         busy = true;
         desktop.Enabled = false;
         string selectedPanel = panelId;
         try
         {
-            status.Text = "Checking for the TURZX display driver…";
+            SetStatus("Checking for the TURZX display driver…");
             if (!await Task.Run(() => DesktopDriver.IsStaged()))
             {
                 MessageStatus("Driver missing. Select Install TURZX display driver in the notification area.");
                 return;
             }
-            status.Text = "TURZX display driver found.";
+            SetStatus("TURZX display driver found.");
             if (MessageBox.Show(this,
                 "The panel will restart in monitor mode. Select Sensors in KryoView to switch back.",
                 "Experimental USB monitor mode", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK)
@@ -272,22 +402,22 @@ internal sealed class Program : Form
 
             enabled = false;
             sensors.Text = "Sensors";
-            status.Text = "Sending the mode switch to the panel…";
+            SetStatus("Sending the mode switch to the panel…");
             string[] previous = await Task.Run(() => Panel.Detect());
             Task switching = Task.Run(delegate
             {
                 try
                 {
-                    if (panel == null) panel = new Panel(selectedPanel);
+                    if (panel == null) panel = new Panel(selectedPanel, Log, LogPacket, synchronize: false);
                     panel.EnterDesktop();
                 }
                 finally { ClosePanel(); }
             });
             if (await Task.WhenAny(switching, Task.Delay(5000)) != switching)
-                status.Text = "USB is taking longer than expected. If this persists, reconnect the panel.";
+                SetStatus("USB monitor switch still pending after 5000 ms.");
             await switching;
 
-            status.Text = "Waiting for Windows to detect the panel in monitor mode…";
+            SetStatus("Waiting for Windows to detect the panel in monitor mode…");
             for (int attempt = 0; attempt < 12; attempt++)
             {
                 await Task.Delay(500);
@@ -316,7 +446,7 @@ internal sealed class Program : Form
         busy = true;
         try
         {
-            status.Text = "Querying the TURZX panel model…";
+            SetStatus("Querying the TURZX panel model…");
             bool switched = await Task.Run(() => Panel.ExitDesktop(() => (bool)Invoke(new Func<bool>(() =>
                 MessageBox.Show(this,
                     "The panel did not answer the model query. If the connected TURZX panel is an 8.8-inch model, select Yes to try switching it to Sensors.",
@@ -332,7 +462,7 @@ internal sealed class Program : Form
             desktopConnected = false;
             nextTransfer = DateTime.MinValue;
             nextProbe = DateTime.MinValue;
-            status.Text = "Waiting for the panel to return to sensor mode…";
+            SetStatus("Waiting for the panel to return to sensor mode…");
         }
         catch (Exception error) { MessageStatus(error.Message); }
         finally { busy = false; }

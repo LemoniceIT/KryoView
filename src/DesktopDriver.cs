@@ -7,12 +7,14 @@ using System.Text.RegularExpressions;
 internal static class DesktopDriver
 {
     private static readonly Regex HardwareId = new Regex(
-        @"^\s*[^;=]+=[^;]*,\s*USB\\VID_1A86&PID_AD11&MI_00\s*(?:[,;]|$)",
-        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant);
+        @"^[^;=]+=[^;]*,[ \t]*USB\\VID_1A86&PID_AD11&MI_00[ \t]*(?:[,;]|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     internal static bool Matches(string inf)
     {
-        return HardwareId.IsMatch(File.ReadAllText(inf));
+        return File.ReadLines(inf).Any(line =>
+            line.IndexOf(@"USB\VID_1A86&PID_AD11&MI_00", StringComparison.OrdinalIgnoreCase) >= 0 &&
+            HardwareId.IsMatch(line));
     }
 
     internal static bool IsStaged()

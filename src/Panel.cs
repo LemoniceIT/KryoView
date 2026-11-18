@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -15,6 +16,8 @@ internal sealed class Panel : IDisposable
     internal const string UsbModel = @"USB\VID_1CBE&PID_0088";
     internal const string DesktopModel = @"USB\VID_1A86&PID_AD11";
     private readonly SafeFileHandle file;
+    private readonly Action<string> log;
+    private readonly Action<string> logPacket;
     private IntPtr usb;
 
     internal static string[] Detect()
@@ -41,8 +44,10 @@ internal sealed class Panel : IDisposable
         return id.StartsWith(model + "\\", StringComparison.OrdinalIgnoreCase);
     }
 
-    internal Panel(string id)
+    internal Panel(string id, Action<string> log, Action<string> logPacket, bool synchronize = true)
     {
+        this.log = log;
+        this.logPacket = logPacket;
         var classes = new HashSet<Guid> { new Guid("a5dcbf10-6530-11d2-901f-00c04fb951ed") };
         using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\" + id + @"\Device Parameters"))
         {
@@ -77,10 +82,12 @@ internal sealed class Panel : IDisposable
                     try
                     {
                         uint timeout = 1250;
+                        uint writeTimeout = 5000;
                         if (!WinUsb_SetPipePolicy(usb, 0x81, 3, 4, ref timeout) ||
-                            !WinUsb_SetPipePolicy(usb, 0x01, 3, 4, ref timeout))
+                            !WinUsb_SetPipePolicy(usb, 0x01, 3, 4, ref writeTimeout))
                             throw new Win32Exception();
-                        Exchange(10, null, "synchronize with the panel");
+                        log("WinUSB opened.");
+                        if (synchronize) Synchronize();
                         return;
                     }
                     catch
@@ -95,10 +102,69 @@ internal sealed class Panel : IDisposable
         throw new IOException("Cannot access the WinUSB interface. Close the TURZX app and check the USB driver.");
     }
 
-    internal void StopLocalPlayback()
+    private void Synchronize()
     {
-        // The firmware can accept this command without returning a response.
-        Write(Packet(111, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
+        try
+        {
+            Exchange(10, null, "synchronize with the panel");
+        }
+        catch (IOException error)
+        {
+            if (!RecoverUsbTimeout(error)) throw;
+            Exchange(10, null, "synchronize with the panel after resetting the USB pipes");
+        }
+    }
+
+    private bool RecoverUsbTimeout(IOException error)
+    {
+        var usbError = error.InnerException as Win32Exception;
+        if (usbError == null || usbError.NativeErrorCode != 121) return false;
+        log(error.Message + " Resetting the bulk pipes and retrying once.");
+        bool outputReset = ResetPipe(0x01);
+        bool inputReset = ResetPipe(0x81);
+        return outputReset && inputReset;
+    }
+
+    private bool ResetPipe(byte endpoint)
+    {
+        var elapsed = Stopwatch.StartNew();
+        log("Resetting USB endpoint 0x" + endpoint.ToString("X2") + ".");
+        bool reset = WinUsb_ResetPipe(usb, endpoint);
+        int error = reset ? 0 : Marshal.GetLastWin32Error();
+        log("USB endpoint 0x" + endpoint.ToString("X2") + " reset " +
+            (reset ? "completed" : "failed (Windows error " + error + ")") +
+            " after " + elapsed.ElapsedMilliseconds + " ms.");
+        return reset;
+    }
+
+    internal void StartSensorDisplay()
+    {
+        Send(111);
+        Thread.Sleep(50);
+        var elapsed = Stopwatch.StartNew();
+        while (true)
+        {
+            byte[] reply = Exchange(112, null, "check local playback", 9, allowMissingReply: true);
+            if (reply == null)
+            {
+                log("No usable playback status reply (112). Continuing after the stop command.");
+                break;
+            }
+            if (reply[8] == 0) break;
+            if (elapsed.ElapsedMilliseconds >= 3000)
+                throw new TimeoutException("The panel is still playing local media after the stop command.");
+            Thread.Sleep(50);
+        }
+
+        // The skin is already rotated to the panel's native orientation.
+        Send(13);
+        Send(14, 80);
+        Send(41);
+    }
+
+    private void Send(byte command, byte argument = 0)
+    {
+        Write(command, null, argument);
     }
 
     internal void ShowFrame(byte[] jpeg)
@@ -110,8 +176,13 @@ internal sealed class Panel : IDisposable
     internal void EnterDesktop()
     {
         // The protocol does not define an acknowledgement for the mode command.
-        Write(Packet(150, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
-        Write(Packet(11, null, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
+        try { Send(150); }
+        catch (IOException error)
+        {
+            if (!RecoverUsbTimeout(error)) throw;
+            Send(150);
+        }
+        Send(11);
     }
 
     internal static bool ExitDesktop(Func<bool> confirmUnidentifiedPanel)
@@ -245,26 +316,40 @@ internal sealed class Panel : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CancelIoEx(SafeFileHandle handle, IntPtr overlapped);
 
-    private void Exchange(byte command, byte[] payload, string operation)
+    private byte[] Exchange(byte command, byte[] payload, string operation, int minimumReplyLength = 1,
+        bool allowMissingReply = false)
     {
-        Write(Packet(command, payload, (int)DateTime.Now.TimeOfDay.TotalMilliseconds));
+        Write(command, payload);
+        var elapsed = Stopwatch.StartNew();
         var response = new byte[512];
-        for (int attempt = 0; attempt < 4; attempt++)
+        // Each preceding command can leave both an empty transfer and a reply queued.
+        for (int attempt = 0; attempt < 16 && elapsed.ElapsedMilliseconds < 2500; attempt++)
         {
             uint received;
             if (!WinUsb_ReadPipe(usb, 0x81, response, (uint)response.Length, out received, IntPtr.Zero))
             {
                 int error = Marshal.GetLastWin32Error();
+                log("USB IN " + command + " failed after " + elapsed.ElapsedMilliseconds +
+                    " ms (Windows error " + error + ").");
+                if (allowMissingReply && error == 121) return null;
                 throw new IOException("Could not " + operation + " (USB command " + command +
                     ", Windows error " + error + ").", new Win32Exception(error));
             }
             // Stop playback and earlier transfers can leave replies queued on the same endpoint.
-            if (received > 0 && response[0] == command) return;
+            if (received >= minimumReplyLength && response[0] == command)
+            {
+                logPacket("USB IN " + command + " · " + received + " bytes · " + elapsed.ElapsedMilliseconds + " ms");
+                return response;
+            }
+            logPacket("USB IN while waiting for " + command + " · " + received + " bytes · " +
+                (received == 0 ? "empty reply" : "command " + response[0]) +
+                " · " + elapsed.ElapsedMilliseconds + " ms");
         }
+        if (allowMissingReply) return null;
         throw new IOException("No matching reply while trying to " + operation + " (USB command " + command + ").");
     }
 
-    internal static byte[] Packet(byte command, byte[] payload, int milliseconds)
+    internal static byte[] Packet(byte command, byte[] payload, int milliseconds, byte argument = 0)
     {
         int length = payload == null ? 0 : payload.Length;
         var buffer = new byte[512 + length];
@@ -275,6 +360,7 @@ internal sealed class Panel : IDisposable
         Buffer.BlockCopy(BitConverter.GetBytes(milliseconds), 0, header, 4, 4);
         for (int offset = 0; offset < 4; offset++)
             header[8 + offset] = (byte)(length >> (24 - 8 * offset));
+        if (payload == null) header[8] = argument;
         using (var des = DES.Create())
         {
             des.Padding = PaddingMode.None;
@@ -288,12 +374,19 @@ internal sealed class Panel : IDisposable
         return buffer;
     }
 
-    private void Write(byte[] packet)
+    private void Write(byte command, byte[] payload, byte argument = 0)
     {
+        byte[] packet = Packet(command, payload, (int)DateTime.Now.TimeOfDay.TotalMilliseconds, argument);
+        var elapsed = Stopwatch.StartNew();
         uint written;
         if (!WinUsb_WritePipe(usb, 0x01, packet, (uint)packet.Length, out written, IntPtr.Zero))
-            throw new Win32Exception();
+        {
+            int error = Marshal.GetLastWin32Error();
+            throw new IOException("USB write failed (command " + command + ", " + packet.Length +
+                " bytes, Windows error " + error + ", " + elapsed.ElapsedMilliseconds + " ms).", new Win32Exception(error));
+        }
         if (written != packet.Length) throw new IOException("Incomplete USB transfer.");
+        logPacket("USB OUT " + command + " · " + written + " bytes · " + elapsed.ElapsedMilliseconds + " ms");
     }
 
     public void Dispose()
@@ -318,6 +411,8 @@ internal sealed class Panel : IDisposable
     private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
     [DllImport("winusb.dll", SetLastError = true)]
     private static extern bool WinUsb_Initialize(SafeFileHandle file, out IntPtr handle);
+    [DllImport("winusb.dll", SetLastError = true)]
+    private static extern bool WinUsb_ResetPipe(IntPtr handle, byte pipe);
     [DllImport("winusb.dll")]
     private static extern bool WinUsb_Free(IntPtr handle);
     [DllImport("winusb.dll", SetLastError = true)]
